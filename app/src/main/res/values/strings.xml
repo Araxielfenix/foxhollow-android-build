@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- strings.xml - Foxhollow strings -->
+<resources>
+    <string name="app_name">Foxhollow</string>
+    <string name="app_version">0.5.8</string>
+    <string name="game_folder">Select Game Folder</string>
+    <string name="select_iso">Select ISO File</string>
+    <string name="loading_game">Loading game data...</string>
+    <string name="error">Error</string>
+    <string name="file_not_found">Game file not found</string>
+    <string name="permission_denied">Permission denied</string>
+    <string name="restart_app">Please restart the app</string>
+</resources>

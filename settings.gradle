@@ -1,0 +1,30 @@
+// settings.gradle - Foxhollow Android Build Configuration
+// Root project name
+rootProject.name = "Foxhollow"
+
+// Include the app module
+include ':app'
+
+// Include external dependencies as Gradle modules (optional, for development)
+// These are built via CMake, not Gradle, but we can reference their outputs
+// include ':aurora'
+// include ':borealis'
+
+// Project-wide properties
+ext {
+    // Android SDK/NDK versions
+    compileSdkVersion = 34
+    minSdkVersion = 24          // Android 7.0 (API 24) - Aurora requires this minimum
+    targetSdkVersion = 34
+    ndkVersion = "26.1.10909125"
+    
+    // CMake version
+    cmakeVersion = "3.22.1"
+    
+    // Build variants
+    abiFilters = ['arm64-v8a']  // Start with arm64 for performance, can add 'x86_64' later
+    
+    // Version info (sync with CMakeLists.txt)
+    versionName = "0.5.8"
+    versionCode = 58  // 0.5.8 -> 58
+}

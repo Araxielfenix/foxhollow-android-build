@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- themes.xml - Foxhollow themes -->
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Foxhollow" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="colorPrimary">@color/theme_primary</item>
+        <item name="colorPrimaryVariant">@color/theme_primary_variant</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/theme_secondary</item>
+        <item name="colorOnSecondary">@color/black</item>
+        <item name="android:colorBackground">@color/theme_background</item>
+        <item name="android:colorSurface">@color/theme_background</item>
+        <item name="android:colorOnSurface">@color/white</item>
+        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <item name="android:navigationBarColor">?attr/colorPrimaryVariant</item>
+    </style>
+
+    <!-- Fullscreen theme for gameplay -->
+    <style name="Theme.Foxhollow.Fullscreen" parent="Theme.Foxhollow">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:colorBackground">@color/black</item>
+    </style>
+</resources>

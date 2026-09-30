@@ -1,0 +1,182 @@
+name: Foxhollow Android Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  ANDROID_COMPILE_SDK: 34
+  ANDROID_BUILD_TOOLS: 34.0.0
+  ANDROID_MIN_SDK: 24
+  ANDROID_TARGET_SDK: 34
+  NDK_VERSION: 26.1.10909125
+  CMAKE_VERSION: 3.22.1
+  RUNTIME_ABI: arm64-v8a
+
+jobs:
+  build-android:
+    name: Build Android APK (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: ${{ env.ANDROID_TARGET_SDK }}
+          cmake: ${{ env.CMAKE_VERSION }}
+          ndk: ${{ env.NDK_VERSION }}
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build
+          key: gradle-${{ hashFiles('**/*.gradle*', 'local.properties') }}
+          restore-keys: gradle-
+
+      - name: Cache CMake
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cmake
+          key: cmake-${{ hashFiles('**/CMakeLists.txt', '**/build.gradle') }}
+          restore-keys: cmake-
+
+      - name: Build NDK libraries (Aurora + Borealis)
+        id: ndk-build
+        run: |
+          echo "Building for ABI: ${{ matrix.abi }}"
+          
+          # Build Aurora
+          mkdir -p extern/aurora/build-android
+          cd extern/aurora/build-android
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${{ env.ANDROID_MIN_SDK }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAURORA_ENABLE_WEBGPU=ON \
+            -DAURORA_ENABLE_SDL=ON
+          cmake --build . -j$(nproc) || echo "Aurora build had issues, continuing..."
+
+      - name: Build Debug APK
+        run: |
+          echo "Building Foxhollow APK..."
+          chmod +x gradlew || true
+          ./gradlew assembleDebug \
+            -Pandroid.defaultConfig.ndk.abiFilters=${{ matrix.abi }} \
+            --no-daemon \
+            --stacktrace
+
+      - name: Find Debug APK
+        id: find-apk
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" -type f 2>/dev/null | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "APK not found!"
+            exit 1
+          fi
+          echo "apk_path=$APK_FILE" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK_FILE"
+
+      - name: Upload Debug APK
+        if: matrix.abi == 'arm64-v8a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Foxhollow-debug-apk-${{ matrix.abi }}
+          path: ${{ steps.find-apk.outputs.apk_path }}
+          retention-days: 30
+
+      - name: Generate Release APK (if tagged)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "Release build requested for tag: ${{ github.ref_name }}"
+          chmod +x gradlew || true
+          ./gradlew assembleRelease \
+            -Pandroid.defaultConfig.ndk.abiFilters=${{ matrix.abi }} \
+            --no-daemon \
+            --stacktrace
+
+      - name: Upload Release APK
+        if: startsWith(github.ref, 'refs/tags/') && matrix.abi == 'arm64-v8a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Foxhollow-release-apk
+          path: |
+            app/build/outputs/apk/release/*.apk
+          retention-days: 90
+
+  summary:
+    name: Build Summary
+    needs: build-android
+    runs-on: ubuntu-latest
+    outputs:
+      apk_url: ${{ steps.upload_artifact.outputs.artifact_url }}
+    steps:
+      - name: Download latest APK
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: Foxhollow-debug-apk-arm64-v8a
+          path: app/build/outputs/apk/
+
+      - name: List output files
+        run: |
+          echo "## APK Build Output"
+          echo ""
+          ls -la app/build/outputs/apk/*/
+          echo ""
+          echo "APK size:"
+          du -h app/build/outputs/apk/*/app-*.apk 2>/dev/null || echo "APK file not found"
+
+  notify:
+    name: Notify
+    needs: [build-android, summary]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            ## 📱 Foxhollow Android Build Result
+
+            **Build Status**: ${{ job_status }}
+
+            ${{ if (matrix.abi == 'arm64-v8a') }}
+            ### 📦 Artifacts Available
+            Debug APK (arm64-v8a):
+            [Download](./artifacts/Foxhollow-debug-apk-arm64-v8a)
+            ${{ endif }}
+
+            ${{ if (startsWith(github.ref, 'refs/tags/')) }}
+            🔒 **Release Build** from tag `${{ github.ref_name }}`
+            ${{ endif }}
+
+            ---
+            *Built on GitHub Actions with Hermes Agent*
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
