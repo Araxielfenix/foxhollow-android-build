@@ -59,7 +59,7 @@ android {
                             "-DCORROSION_CARGO=${rustToolchain}/cargo${fhRustExe}"
                 cFlags '-O2'
                 cppFlags '-O2', '-std=c++20'
-                targets 'foxhollow'
+                targets 'foxhollow', 'png_shared'
             }
         }
     }
@@ -91,25 +91,49 @@ android {
         }
     }
 
-    // SDL3's org.libsdl.app classes come from the source tree CMake vendors during the native
-    // build. Aurora's own Android surface class is shipped in this module instead, so Aurora's
-    // platforms/android/java is deliberately not added here.
+    // SDL3's org.libsdl.app classes are fetched into the CMake binary tree during the native
+    // build. That tree lives under app/.cxx/<buildType>/<hash>/<abi>, and the hash is not stable
+    // across machines, so stageSdlJava globs for it and copies the sources into a fixed generated
+    // directory that the source set points at. Aurora's own Android surface class is shipped in
+    // this module instead, so Aurora's platforms/android/java is deliberately not added here.
     sourceSets {
         main {
-            java.srcDirs += [
-                "${rootDir}/build-android-arm64-v8a/_deps/sdl-src/android-project/app/src/main/java"
-            ]
+            java.srcDirs += ["${layout.buildDirectory.get()}/generated/sdl/java"]
         }
     }
 }
 
-// aurora's PNG dependency builds a shared libpng16 that libfoxhollow.so links against, but it is
-// not one of our CMake targets, so Gradle never packages it. Stage it next to the other jniLibs
-// before packaging.
-def stageExtraJniLibs = tasks.register('stageExtraJniLibs', Copy) {
-    from(fileTree(dir: "${rootDir}/build-android-arm64-v8a", includes: ['**/libpng16.so'])) {
-        exclude '**/CMakeFiles/**'
+def nativeCxxDir = file("${rootDir}/app/.cxx")
+
+// org.libsdl.app is not a Gradle target, so nothing would compile it without this copy.
+def stageSdlJava = tasks.register('stageSdlJava', Copy) {
+    description 'Copies the SDL3 Android Java classes out of the CMake tree so they can be compiled.'
+    dependsOn 'configureCMakeRelWithDebInfo[arm64-v8a]'
+    // Changing the CMake arguments produces a new <hash> directory under .cxx while the old one
+    // is still around, so the same classes can be matched more than once.
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    from(fileTree(dir: nativeCxxDir,
+        includes: ['**/_deps/sdl-src/android-project/app/src/main/java/org/libsdl/app/*.java'])) {
+        // Flatten: fileTree keeps the path relative to app/.cxx, which would bury the classes
+        // under RelWithDebInfo/<hash>/... and break the package layout.
+        it.eachFile { f -> f.path = f.name }
     }
+    into layout.buildDirectory.dir('generated/sdl/java/org/libsdl/app')
+}
+
+// Hooked onto javac rather than preBuild: the CMake configure task already depends on
+// preBuild (via preReleaseBuild), so depending on it from preBuild would be a cycle.
+// configureEach keeps this lazy, since the javac task is not registered yet at this point.
+tasks.withType(JavaCompile).configureEach {
+    dependsOn stageSdlJava
+}
+
+// aurora's PNG dependency builds a shared libpng16 that libfoxhollow.so links against. It is not
+// a dependency of the foxhollow target, so it has to be listed as an extra CMake target (see
+// externalNativeBuild arguments above) or Gradle never builds it. Stage it next to the other
+// jniLibs before packaging, reading it from the same CMake tree the native build populates.
+def stageExtraJniLibs = tasks.register('stageExtraJniLibs', Copy) {
+    from(fileTree(dir: nativeCxxDir, includes: ['**/libpng16.so'], excludes: ['**/CMakeFiles/**']))
     // Flatten: only the .so should land here, never a copy of the native build tree.
     eachFile { it.path = it.name }
     includeEmptyDirs = false
