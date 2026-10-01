@@ -45,6 +45,13 @@ android {
                           '-DCMAKE_C_FLAGS=-D_LIBCPP_ENABLE_EXPERIMENTAL',
                           '-DCMAKE_CXX_FLAGS=-D_LIBCPP_ENABLE_EXPERIMENTAL',
                           '-DFOXHOLLOW_STATIC_JPEG=ON',
+                            // aurora pulls zstd with find_package / pkg-config first and only falls
+                            // back to FetchContent when neither finds it. CI images ship a host zstd
+                            // that pkg-config resolves to paths under the NDK sysroot, so the header
+                            // is never found and the FetchContent fallback is skipped. Turning the
+                            // cache compression off is deterministic on every host; the local build
+                            // keeps the compressed cache unless FOXHOLLOW_DISABLE_ZSTD is set.
+                            "-DAURORA_CACHE_USE_ZSTD=${(System.getenv('FOXHOLLOW_DISABLE_ZSTD') ?: '0') == '1' ? 'OFF' : 'ON'}",
                           "-DJPEG_INCLUDE_DIR=${rootDir}/third_party/jpeg-turbo-arm64/include",
                           "-DJPEG_LIBRARY=${rootDir}/third_party/jpeg-turbo-arm64/lib/libjpeg.a",
 "-DRust_COMPILER=${rustToolchain}/rustc${fhRustExe}",

@@ -119,6 +119,11 @@ jobs:
           restore-keys: cargo-
 
       - name: Build debug APK
+        env:
+          # See app/build.gradle: without this, pkg-config resolves the image's host
+          # zstd to paths inside the NDK sysroot and aurora never falls back to
+          # fetching it for the target.
+          FOXHOLLOW_DISABLE_ZSTD: '1'
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace
