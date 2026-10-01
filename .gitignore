@@ -14,8 +14,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root on purpose. The unanchored form excluded every
+# nested directory named 'lib', which silently dropped all of aurora's
+# implementation (extern/aurora/lib) from the repository.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
