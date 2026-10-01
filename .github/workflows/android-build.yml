@@ -46,8 +46,26 @@ jobs:
         run: |
           sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
-          echo "$sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+          # cmdline-tools is versioned on the image (16.0, ...), there is no 'latest' symlink.
+          shopt -s nullglob
+          bins=("$sdk"/cmdline-tools/*/bin "$sdk"/cmdline-tools/latest/bin "$sdk"/tools/bin)
+          for d in "${bins[@]}"; do
+            if [ -x "$d/sdkmanager" ]; then
+              echo "found sdkmanager in $d"
+              echo "$d" >> "$GITHUB_PATH"
+              # GITHUB_PATH only affects later steps, so export for this one too.
+              export PATH="$d:$PATH"
+              break
+            fi
+          done
+          for d in "$sdk/platform-tools" "$sdk/cmdline-tools/latest/bin"; do
+            [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+          done
+          if ! command -v sdkmanager > /dev/null; then
+            echo "::error::sdkmanager not found under $sdk/cmdline-tools"
+            ls -la "$sdk" || true
+            exit 1
+          fi
           sdkmanager --version
 
       - name: Install SDK, NDK and CMake
