@@ -73,7 +73,7 @@ typedef int BOOL;
 #if defined(__MWERKS__)
 #define AT_ADDRESS(addr) : (addr)
 #define ATTRIBUTE_ALIGN(num) __attribute__((aligned(num)))
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined(__GNUC__)
 #define AT_ADDRESS(addr)
 #define ATTRIBUTE_ALIGN(num) __attribute__((aligned(num)))
 #elif defined(_MSC_VER)
@@ -86,7 +86,7 @@ typedef int BOOL;
 #ifndef DECL_WEAK
 #if defined(__MWERKS__)
 #define DECL_WEAK __declspec(weak)
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) || defined(__clang__)
 #define DECL_WEAK __attribute__((weak))
 #elif defined(_MSC_VER)
 #define DECL_WEAK

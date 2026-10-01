@@ -13,6 +13,7 @@ enum class Status {
     Selected,
     Canceled,
     Unsupported,
+    Busy,
     Failed,
 };
 
@@ -34,11 +35,20 @@ struct FileOptions {
 struct FolderOptions {
     SDL_Window* parentWindow = nullptr;
     std::string defaultLocation;
+    /** Require a filesystem path instead of a platform location (e.g. on Android). */
+    bool requireRealPath = false;
+};
+
+struct ExportOptions {
+    SDL_Window* parentWindow = nullptr;
+    std::string sourceLocation;
+    std::string suggestedName;
+    std::vector<Filter> filters;
 };
 
 struct Result {
     Status status = Status::Failed;
-    /** Filesystem paths, or content:// URIs for files selected on Android. */
+    /** Opaque locations accepted by borealis::io. */
     std::vector<std::string> locations;
     /** Backend diagnostic for logging; ports provide user-facing text. */
     std::string message;
@@ -47,12 +57,16 @@ struct Result {
 struct Capabilities {
     bool canOpenFile = false;
     bool canOpenFolder = false;
+    bool canExportFile = false;
 };
 
 using Callback = std::function<void(Result)>;
 
 /** Returns backend support. Runtime failures do not change these values. */
 Capabilities capabilities() noexcept;
+
+/** Returns whether an existing file dialog is outstanding. */
+bool busy() noexcept;
 
 /**
  * Opens a non-blocking file dialog. Call from SDL's main thread. The callback runs
@@ -63,7 +77,7 @@ void open_file(FileOptions options, Callback callback);
 /** Opens a non-blocking single-folder dialog with the same callback contract. */
 void open_folder(FolderOptions options, Callback callback);
 
-/** Returns a display name for a filesystem path or platform URI. */
-std::string display_name(std::string_view location);
+/** Exports a readable location to a destination chosen by the user. */
+void export_file(ExportOptions options, Callback callback);
 
 }  // namespace borealis::file_select

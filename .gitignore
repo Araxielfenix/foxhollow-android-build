@@ -57,3 +57,14 @@ Thumbs.db
 
 # Environment
 .env
+
+# CMake / NDK generated inside the Gradle module
+app/.cxx/
+
+# Backup copies made while integrating the upstream dependencies
+*.bak/
+
+# Prebuilt arm64 third-party dependency required to build.
+# Overrides the generic 'lib/' and '*.a' rules above.
+!third_party/jpeg-turbo-arm64/lib/
+!third_party/jpeg-turbo-arm64/lib/**

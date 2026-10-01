@@ -132,16 +132,6 @@ typedef enum _AuroraViewportPolicy {
 void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
 
 /**
- * Sets the display aspect ratio the content framebuffer is fitted to under AURORA_VIEWPORT_FIT.
- *
- * GameCube framebuffer dimensions do not describe their own display aspect: a 640x448 mode is
- * presented at 4:3, not at 640/448. Pass the intended display aspect here (4/3, 16/9) so the
- * present blit letterboxes to it. Pass 0 to derive the aspect from the configured framebuffer
- * dimensions instead, which is the default.
- */
-void AuroraSetDisplayAspect(f32 aspect);
-
-/**
  * Retrieves the current content framebuffer size.
  */
 void AuroraGetRenderSize(u32* width, u32* height);
@@ -177,6 +167,16 @@ void GXCreateFrameBuffer(u32 width, u32 height);
  * Must be called after GXCreateFrameBuffer() to resume normal rendering.
  */
 void GXRestoreFrameBuffer(void);
+
+/**
+ * Sets the display aspect ratio the content framebuffer is fitted to under AURORA_VIEWPORT_FIT.
+ *
+ * GameCube framebuffer dimensions do not describe their own display aspect: a 640x448 mode is
+ * presented at 4:3, not at 640/448. Pass the intended display aspect here (4/3, 16/9) so the
+ * present blit letterboxes to it. Pass 0 to derive the aspect from the configured framebuffer
+ * dimensions instead, which is the default.
+ */
+void AuroraSetDisplayAspect(f32 aspect);
 
 #if __cplusplus
 }

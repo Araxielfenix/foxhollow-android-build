@@ -1,115 +1,203 @@
 package dev.encounter.borealis;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.SocketTimeoutException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.io.InterruptedIOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.net.ssl.HttpsURLConnection;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.Dispatcher;
+import okhttp3.Headers;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.ResponseBody;
 
 public final class BorealisHttpClient {
     public static final int ERROR_NONE = 0;
     public static final int ERROR_INVALID_URL = 1;
     public static final int ERROR_UNSUPPORTED_SCHEME = 2;
     public static final int ERROR_TIMEOUT = 3;
-    public static final int ERROR_TOO_LARGE = 4;
+    public static final int ERROR_CANCELED = 4;
     public static final int ERROR_NETWORK = 5;
 
-    private static final int MAX_REDIRECTS = 5;
+    private static final int CANCEL_POLL_INTERVAL_MS = 50;
+    private static final int READ_BUFFER_SIZE = 64 * 1024;
+    private static final int MAX_REQUESTS_PER_HOST = 8;
+    private static final OkHttpClient HTTP_CLIENT = createHttpClient();
 
     public static final class Response {
         public int error;
         public String message;
-        public int statusCode;
-        public String[] headerNames;
-        public String[] headerValues;
-        public byte[] body;
 
-        Response(int error, String message, int statusCode, String[] headerNames,
-                 String[] headerValues, byte[] body) {
+        Response(int error, String message) {
             this.error = error;
             this.message = message;
-            this.statusCode = statusCode;
-            this.headerNames = headerNames != null ? headerNames : new String[0];
-            this.headerValues = headerValues != null ? headerValues : new String[0];
-            this.body = body != null ? body : new byte[0];
         }
     }
 
     private BorealisHttpClient() {
     }
 
-    public static Response get(String url, String[] headerNames, String[] headerValues,
-                               int timeoutMs, long maxBodyBytes) {
+    public static Response request(String method, String url, String[] headerNames,
+                                   String[] headerValues, byte[] requestBody,
+                                   int connectTimeoutMs, int readTimeoutMs, long totalTimeoutMs,
+                                   long observerAddress, long signalsAddress) {
         if (url == null || url.isEmpty()) {
             return fail(ERROR_INVALID_URL, "URL is empty");
         }
 
+        Request.Builder requestBuilder = new Request.Builder();
         try {
-            URL currentUrl = new URL(url);
-            if (!isHttps(currentUrl)) {
-                return fail(ERROR_UNSUPPORTED_SCHEME, "Only https:// URLs are supported");
-            }
-
-            for (int redirect = 0; redirect <= MAX_REDIRECTS; ++redirect) {
-                HttpsURLConnection connection =
-                        (HttpsURLConnection) currentUrl.openConnection();
-                try {
-                    connection.setRequestMethod("GET");
-                    connection.setConnectTimeout(timeoutMs);
-                    connection.setReadTimeout(timeoutMs);
-                    connection.setUseCaches(false);
-                    connection.setInstanceFollowRedirects(false);
-                    applyHeaders(connection, headerNames, headerValues);
-
-                    int statusCode = connection.getResponseCode();
-                    if (isRedirect(statusCode)) {
-                        String location = connection.getHeaderField("Location");
-                        if (location == null || location.isEmpty()) {
-                            return fail(ERROR_NETWORK, "Redirect response did not include Location",
-                                    statusCode, connection, new byte[0]);
-                        }
-
-                        URL nextUrl = new URL(currentUrl, location);
-                        if (!isHttps(nextUrl)) {
-                            return fail(ERROR_UNSUPPORTED_SCHEME,
-                                    "Only https:// redirects are supported", statusCode,
-                                    connection, new byte[0]);
-                        }
-                        currentUrl = nextUrl;
-                        continue;
-                    }
-
-                    byte[] body = readBody(connection, statusCode, maxBodyBytes);
-                    return success(statusCode, connection, body);
-                } catch (ResponseTooLargeException e) {
-                    return fail(ERROR_TOO_LARGE, "Response body exceeded the configured limit",
-                            safeStatusCode(connection), connection, e.partialBody);
-                } finally {
-                    connection.disconnect();
-                }
-            }
-
-            return fail(ERROR_NETWORK, "Too many redirects");
-        } catch (MalformedURLException e) {
+            requestBuilder.url(url);
+        } catch (IllegalArgumentException e) {
             return fail(ERROR_INVALID_URL, "Failed to parse URL");
-        } catch (SocketTimeoutException e) {
-            return fail(ERROR_TIMEOUT, "Request timed out");
-        } catch (IOException e) {
+        }
+
+        final Request httpRequest;
+        try {
+            applyHeaders(requestBuilder, headerNames, headerValues);
+            byte[] body = requestBody != null ? requestBody : new byte[0];
+            requestBuilder.method(method,
+                    methodHasRequestBody(method) ? RequestBody.create(body, null) : null);
+            httpRequest = requestBuilder.build();
+        } catch (IllegalArgumentException e) {
             String message = e.getMessage();
             return fail(ERROR_NETWORK, message != null ? message : e.toString());
-        } catch (ClassCastException e) {
+        }
+
+        if (!httpRequest.url().isHttps()) {
             return fail(ERROR_UNSUPPORTED_SCHEME, "Only https:// URLs are supported");
+        }
+
+        OkHttpClient client = HTTP_CLIENT.newBuilder()
+                .connectTimeout(Math.max(connectTimeoutMs, 1), TimeUnit.MILLISECONDS)
+                .readTimeout(Math.max(readTimeoutMs, 1), TimeUnit.MILLISECONDS)
+                .writeTimeout(Math.max(readTimeoutMs, 1), TimeUnit.MILLISECONDS)
+                .callTimeout(Math.max(totalTimeoutMs, 0), TimeUnit.MILLISECONDS)
+                .build();
+        Call call = client.newCall(httpRequest);
+        RequestCompletion completion = new RequestCompletion(call);
+
+        try {
+            call.enqueue(new Callback() {
+                @Override
+                public void onFailure(Call failedCall, IOException exception) {
+                    completion.finish(failure(completion, exception));
+                }
+
+                @Override
+                public void onResponse(Call completedCall, okhttp3.Response response) {
+                    completion.finish(readResponse(completedCall, response, completion,
+                            observerAddress, signalsAddress));
+                }
+            });
+        } catch (RuntimeException e) {
+            String message = e.getMessage();
+            return fail(ERROR_NETWORK, message != null ? message : e.toString());
+        }
+
+        boolean interrupted = false;
+        while (!completion.done()) {
+            if (isCanceled(signalsAddress)) {
+                completion.cancel();
+            }
+            try {
+                completion.await(CANCEL_POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                interrupted = true;
+                completion.cancel();
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return completion.response();
+    }
+
+    private static OkHttpClient createHttpClient() {
+        Dispatcher dispatcher = new Dispatcher();
+        dispatcher.setMaxRequestsPerHost(MAX_REQUESTS_PER_HOST);
+        return new OkHttpClient.Builder()
+                .dispatcher(dispatcher)
+                .followSslRedirects(false)
+                .build();
+    }
+
+    private static Response readResponse(Call call, okhttp3.Response httpResponse,
+                                         RequestCompletion completion, long observerAddress,
+                                         long signalsAddress) {
+        try (okhttp3.Response response = httpResponse) {
+            checkCanceled(completion, signalsAddress);
+            HeaderLists headers = readHeaders(response.headers());
+            if (onResponse(observerAddress, response.code(), headers.names, headers.values)) {
+                call.cancel();
+                return success();
+            }
+
+            ResponseBody responseBody = response.body();
+            if (responseBody == null) {
+                return success();
+            }
+            return readBody(call, responseBody, completion, observerAddress, signalsAddress);
+        } catch (RequestCanceledException e) {
+            return fail(ERROR_CANCELED, "Request canceled");
+        } catch (InterruptedIOException e) {
+            return failure(completion, e);
+        } catch (IOException e) {
+            return failure(completion, e);
+        } catch (RuntimeException e) {
+            String message = e.getMessage();
+            return fail(ERROR_NETWORK, message != null ? message : e.toString());
         }
     }
 
-    private static void applyHeaders(HttpsURLConnection connection, String[] names,
+    private static Response readBody(Call call, ResponseBody responseBody,
+                                     RequestCompletion completion, long observerAddress,
+                                     long signalsAddress)
+            throws IOException, RequestCanceledException {
+        byte[] buffer = new byte[READ_BUFFER_SIZE];
+        try (InputStream bodyStream = responseBody.byteStream()) {
+            while (true) {
+                checkCanceled(completion, signalsAddress);
+                int read = bodyStream.read(buffer);
+                if (read < 0) {
+                    return success();
+                }
+                if (read == 0) {
+                    continue;
+                }
+                if (onData(observerAddress, buffer, read)) {
+                    call.cancel();
+                    return success();
+                }
+            }
+        }
+    }
+
+    private static void checkCanceled(RequestCompletion completion, long signalsAddress)
+            throws RequestCanceledException {
+        if (completion.cancellationRequested() || isCanceled(signalsAddress)) {
+            completion.cancel();
+            throw new RequestCanceledException();
+        }
+    }
+
+    private static Response failure(RequestCompletion completion, IOException exception) {
+        if (completion.cancellationRequested()) {
+            return fail(ERROR_CANCELED, "Request canceled");
+        }
+        if (exception instanceof InterruptedIOException) {
+            return fail(ERROR_TIMEOUT, "Request timed out");
+        }
+        String message = exception.getMessage();
+        return fail(ERROR_NETWORK, message != null ? message : exception.toString());
+    }
+
+    private static void applyHeaders(Request.Builder requestBuilder, String[] names,
                                      String[] values) {
         if (names == null || values == null) {
             return;
@@ -118,104 +206,39 @@ public final class BorealisHttpClient {
         int count = Math.min(names.length, values.length);
         for (int i = 0; i < count; ++i) {
             if (names[i] != null && values[i] != null) {
-                connection.setRequestProperty(names[i], values[i]);
+                requestBuilder.addHeader(names[i], values[i]);
             }
         }
     }
 
-    private static boolean isHttps(URL url) {
-        return "https".equalsIgnoreCase(url.getProtocol());
+    private static boolean methodHasRequestBody(String method) {
+        return "POST".equals(method);
     }
 
-    private static boolean isRedirect(int statusCode) {
-        return statusCode == HttpURLConnection.HTTP_MOVED_PERM ||
-                statusCode == HttpURLConnection.HTTP_MOVED_TEMP ||
-                statusCode == HttpURLConnection.HTTP_SEE_OTHER ||
-                statusCode == 307 ||
-                statusCode == 308;
-    }
-
-    private static byte[] readBody(HttpsURLConnection connection, int statusCode,
-                                   long maxBodyBytes) throws IOException,
-            ResponseTooLargeException {
-        InputStream stream = statusCode >= HttpURLConnection.HTTP_BAD_REQUEST ?
-                connection.getErrorStream() : connection.getInputStream();
-        if (stream == null) {
-            return new byte[0];
+    private static HeaderLists readHeaders(Headers headers) {
+        String[] names = new String[headers.size()];
+        String[] values = new String[headers.size()];
+        for (int i = 0; i < headers.size(); ++i) {
+            names[i] = headers.name(i);
+            values[i] = headers.value(i);
         }
-
-        try (InputStream bodyStream = stream;
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            long total = 0;
-            while (true) {
-                int read = bodyStream.read(buffer);
-                if (read < 0) {
-                    return out.toByteArray();
-                }
-                if (read == 0) {
-                    continue;
-                }
-                if (read > maxBodyBytes || total > maxBodyBytes - read) {
-                    throw new ResponseTooLargeException(out.toByteArray());
-                }
-                out.write(buffer, 0, read);
-                total += read;
-            }
-        }
+        return new HeaderLists(names, values);
     }
 
-    private static int safeStatusCode(HttpsURLConnection connection) {
-        try {
-            return connection.getResponseCode();
-        } catch (IOException e) {
-            return 0;
-        }
-    }
-
-    private static Response success(int statusCode, HttpsURLConnection connection, byte[] body) {
-        HeaderLists headers = readHeaders(connection);
-        return new Response(ERROR_NONE, "", statusCode, headers.names, headers.values, body);
+    private static Response success() {
+        return new Response(ERROR_NONE, "");
     }
 
     private static Response fail(int error, String message) {
-        return new Response(error, message, 0, null, null, null);
+        return new Response(error, message);
     }
 
-    private static Response fail(int error, String message, int statusCode,
-                                 HttpsURLConnection connection, byte[] body) {
-        HeaderLists headers = readHeaders(connection);
-        return new Response(error, message, statusCode, headers.names, headers.values, body);
-    }
+    private static native boolean onResponse(long observerAddress, int statusCode,
+                                             String[] headerNames, String[] headerValues);
 
-    private static HeaderLists readHeaders(HttpsURLConnection connection) {
-        List<String> names = new ArrayList<>();
-        List<String> values = new ArrayList<>();
+    private static native boolean onData(long observerAddress, byte[] data, int length);
 
-        Map<String, List<String>> headerFields = connection.getHeaderFields();
-        if (headerFields == null) {
-            return new HeaderLists(new String[0], new String[0]);
-        }
-
-        for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
-            String name = entry.getKey();
-            if (name == null) {
-                continue;
-            }
-            List<String> entryValues = entry.getValue();
-            if (entryValues == null || entryValues.isEmpty()) {
-                names.add(name);
-                values.add("");
-                continue;
-            }
-            for (String value : entryValues) {
-                names.add(name);
-                values.add(value != null ? value : "");
-            }
-        }
-
-        return new HeaderLists(names.toArray(new String[0]), values.toArray(new String[0]));
-    }
+    private static native boolean isCanceled(long signalsAddress);
 
     private static final class HeaderLists {
         final String[] names;
@@ -227,11 +250,45 @@ public final class BorealisHttpClient {
         }
     }
 
-    private static final class ResponseTooLargeException extends Exception {
-        final byte[] partialBody;
+    private static final class RequestCompletion {
+        private final Call call;
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
+        private volatile Response response;
 
-        ResponseTooLargeException(byte[] partialBody) {
-            this.partialBody = partialBody;
+        RequestCompletion(Call call) {
+            this.call = call;
         }
+
+        void cancel() {
+            cancellationRequested.set(true);
+            call.cancel();
+        }
+
+        boolean cancellationRequested() {
+            return cancellationRequested.get();
+        }
+
+        void finish(Response value) {
+            response = value;
+            latch.countDown();
+        }
+
+        boolean done() {
+            return latch.getCount() == 0;
+        }
+
+        void await(long timeoutMs) throws InterruptedException {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        }
+
+        Response response() {
+            return response != null ? response : fail(ERROR_NETWORK,
+                    "Android HTTP request did not return a response");
+        }
+    }
+
+    private static final class RequestCanceledException extends Exception {
+        private static final long serialVersionUID = 1L;
     }
 }

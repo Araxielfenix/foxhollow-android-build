@@ -1,4 +1,8 @@
 #include "file_select_internal.hpp"
+#include "ios_import.hpp"
+
+#include "../io_internal.hpp"
+#include "borealis/log.hpp"
 
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -7,21 +11,76 @@
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>
 
+#include <dlfcn.h>
+#include <filesystem>
 #include <memory>
 #include <utility>
 
 using borealis::file_select::Callback;
 using borealis::file_select::Result;
 using borealis::file_select::Status;
+using borealis::file_select::detail::compare_ios_identity;
 using borealis::file_select::detail::complete;
+using borealis::file_select::detail::IOSIdentity;
 
 namespace {
+constexpr borealis::Log FileSelectLog{"borealis::file_select"};
 
 void* gPickerDelegateKey = &gPickerDelegateKey;
 
+std::string error_message(NSError* error, const char* fallback) {
+    const char* description = error.localizedDescription.UTF8String;
+    return description != nullptr ? description : fallback;
+}
+
 struct IOSFileState {
     Callback callback;
+    bool importFiles = false;
+    borealis::io::PathAccess sourceAccess;
+    std::filesystem::path temporaryDirectory;
+
+    ~IOSFileState() {
+        if (!temporaryDirectory.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove_all(temporaryDirectory, ignored);
+        }
+    }
 };
+
+IOSIdentity signing_identity() {
+    void* security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY);
+    if (security == nullptr) {
+        return IOSIdentity::Unknown;
+    }
+    const auto create =
+        reinterpret_cast<CFTypeRef (*)(CFAllocatorRef)>(dlsym(security, "SecTaskCreateFromSelf"));
+    const auto copyValue = reinterpret_cast<CFTypeRef (*)(CFTypeRef, CFStringRef, CFErrorRef*)>(
+        dlsym(security, "SecTaskCopyValueForEntitlement"));
+    CFTypeRef task = create != nullptr ? create(kCFAllocatorDefault) : nullptr;
+    CFTypeRef value = task != nullptr && copyValue != nullptr ?
+                          copyValue(task, CFSTR("application-identifier"), nullptr) :
+                          nullptr;
+    IOSIdentity identity = IOSIdentity::Unknown;
+    if (value != nullptr && CFGetTypeID(value) == CFStringGetTypeID()) {
+        NSString* applicationIdentifier = (__bridge NSString*)value;
+        NSString* bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
+        const char* identifier = applicationIdentifier.UTF8String;
+        const char* bundle = bundleIdentifier.UTF8String;
+        if (identifier != nullptr && bundle != nullptr) {
+            identity = compare_ios_identity(
+                {identifier, [applicationIdentifier lengthOfBytesUsingEncoding:NSUTF8StringEncoding]},
+                {bundle, [bundleIdentifier lengthOfBytesUsingEncoding:NSUTF8StringEncoding]});
+        }
+    }
+    if (value != nullptr) {
+        CFRelease(value);
+    }
+    if (task != nullptr) {
+        CFRelease(task);
+    }
+    dlclose(security);
+    return identity;
+}
 
 UIViewController* top_view_controller(UIViewController* controller) {
     UIViewController* current = controller;
@@ -54,12 +113,25 @@ NSURL* initial_directory_url(const std::string& defaultLocation) {
         return nil;
     }
 
-    NSString* path = [NSString stringWithUTF8String:defaultLocation.c_str()];
+    std::string resolvedPath = defaultLocation;
+    void* access = nullptr;
+    if (borealis::io::detail::is_apple_location(defaultLocation)) {
+        auto resolved = borealis::io::detail::resolve_apple_location(defaultLocation, true);
+        if (resolved.status != borealis::io::Status::Ok) {
+            return nil;
+        }
+        resolvedPath = std::move(resolved.path);
+        access = resolved.access;
+    }
+    NSString* path = [NSString stringWithUTF8String:resolvedPath.c_str()];
     if (path == nil) {
+        borealis::io::detail::release_access(access);
         return nil;
     }
     NSURL* url = [NSURL fileURLWithPath:path];
-    return [path hasSuffix:@"/"] ? url : url.URLByDeletingLastPathComponent;
+    NSURL* directory = [path hasSuffix:@"/"] ? url : url.URLByDeletingLastPathComponent;
+    borealis::io::detail::release_access(access);
+    return directory;
 }
 
 }  // namespace
@@ -83,15 +155,57 @@ NSURL* initial_directory_url(const std::string& defaultLocation) {
 
 - (void)documentPicker:(UIDocumentPickerViewController*)controller
     didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-    Result result{.status = Status::Selected};
-    for (NSURL* url in urls) {
-        const char* path = url.path.UTF8String;
-        if (path != nullptr) {
-            result.locations.emplace_back(path);
-        }
+    if (self.state == nullptr) {
+        return;
     }
 
-    if (result.locations.empty()) {
+    if (self.state->importFiles) {
+        const auto root = borealis::io::detail::apple_import_directory();
+        std::string error;
+        auto batch =
+            borealis::file_select::detail::stage_ios_imports((__bridge void*)urls, root, error);
+        if (!batch) {
+            [self finishWithResult:Result{.status = Status::Failed, .message = std::move(error)}];
+            return;
+        }
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            Result result{.status = Status::Selected};
+            for (const auto& file : batch->files) {
+                auto retained = borealis::file_select::detail::retain_ios_import(file, root);
+                if (retained.status != borealis::io::Status::Ok) {
+                    result.status = Status::Failed;
+                    result.locations.clear();
+                    result.message = std::move(retained.message);
+                    break;
+                }
+                result.locations.push_back(std::move(retained.location));
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self finishWithResult:result];
+            });
+        });
+        return;
+    }
+
+    Result result{.status = Status::Selected};
+    for (NSURL* url in urls) {
+        const BOOL accessing = [url startAccessingSecurityScopedResource];
+        std::string error;
+        std::string bookmark = borealis::io::detail::apple_bookmark_for_url(
+            (__bridge void*)url, error);
+        if (accessing) {
+            [url stopAccessingSecurityScopedResource];
+        }
+        if (bookmark.empty()) {
+            result.status = Status::Failed;
+            result.locations.clear();
+            result.message = std::move(error);
+            break;
+        }
+        result.locations.push_back(std::move(bookmark));
+    }
+
+    if (result.status == Status::Selected && result.locations.empty()) {
         result.status = Status::Failed;
         result.message = "The selected files could not be represented as UTF-8";
     }
@@ -108,26 +222,134 @@ NSURL* initial_directory_url(const std::string& defaultLocation) {
 
 namespace borealis::file_select::detail {
 
-void open_ios_file(FileOptions options, Callback callback) {
-    UIViewController* presenter = presenter_from_window(options.parentWindow);
+namespace {
+
+void open_ios_picker(SDL_Window* parentWindow, std::string defaultLocation, bool multiSelect,
+    NSArray<UTType*>* contentTypes, bool importFiles, Callback callback) {
+    UIViewController* presenter = presenter_from_window(parentWindow);
     if (presenter == nil) {
-        complete(std::move(callback), {
+        complete(std::move(callback),
+            {
             .status = Status::Failed,
             .message = "Unable to find an iOS view controller for the file dialog",
         });
         return;
     }
 
-    UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[ UTTypeItem ]
-                           asCopy:YES];
-    picker.allowsMultipleSelection = options.multiSelect ? YES : NO;
+    UIDocumentPickerViewController* picker =
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:contentTypes
+                                                                    asCopy:importFiles ? YES : NO];
+    picker.allowsMultipleSelection = multiSelect ? YES : NO;
     picker.shouldShowFileExtensions = YES;
-    if (NSURL* directoryUrl = initial_directory_url(options.defaultLocation)) {
+    if (NSURL* directoryUrl = initial_directory_url(defaultLocation)) {
         picker.directoryURL = directoryUrl;
     }
 
-    auto state = std::make_unique<IOSFileState>(IOSFileState{.callback = std::move(callback)});
+    auto state = std::make_unique<IOSFileState>();
+    state->callback = std::move(callback);
+    state->importFiles = importFiles;
+    BorealisDocumentPickerDelegate* delegate = [BorealisDocumentPickerDelegate new];
+    delegate.state = state.release();
+    picker.delegate = delegate;
+    objc_setAssociatedObject(
+        picker, gPickerDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [presenter presentViewController:picker animated:YES completion:nil];
+}
+
+}  // namespace
+
+void open_ios_file(FileOptions options, Callback callback) {
+    const auto identity = signing_identity();
+    if (identity != IOSIdentity::Match) {
+        FileSelectLog.warn(
+            "Importing files because signing identity {}",
+            identity == IOSIdentity::Mismatch ? "does not match the bundle" : "is unavailable");
+    }
+    open_ios_picker(options.parentWindow, std::move(options.defaultLocation), options.multiSelect,
+        @[ UTTypeItem ], identity != IOSIdentity::Match, std::move(callback));
+}
+
+void open_ios_folder(FolderOptions options, Callback callback) {
+    open_ios_picker(options.parentWindow, std::move(options.defaultLocation), false,
+        @[ UTTypeFolder ], false, std::move(callback));
+}
+
+void export_ios_file(ExportOptions options, Callback callback) {
+    UIViewController* presenter = presenter_from_window(options.parentWindow);
+    if (presenter == nil) {
+        complete(std::move(callback), {
+            .status = Status::Failed,
+            .message = "Unable to find an iOS view controller for the export dialog",
+        });
+        return;
+    }
+
+    auto state = std::make_unique<IOSFileState>();
+    state->callback = std::move(callback);
+    state->sourceAccess = borealis::io::access_path(options.sourceLocation);
+    if (!state->sourceAccess) {
+        complete(std::move(state->callback), {
+            .status = Status::Failed,
+            .message = "Export source is not available as an iOS file URL",
+        });
+        return;
+    }
+
+    std::filesystem::path exportPath = state->sourceAccess.path();
+    if (borealis::io::fs_path_to_string(exportPath.filename()) != options.suggestedName) {
+        NSString* temporaryRoot = NSTemporaryDirectory();
+        NSString* identifier = NSUUID.UUID.UUIDString;
+        NSString* directory = [temporaryRoot stringByAppendingPathComponent:identifier];
+        NSString* suggestedName = [[NSString alloc] initWithBytes:options.suggestedName.data()
+                                                            length:options.suggestedName.size()
+                                                          encoding:NSUTF8StringEncoding];
+        if (suggestedName == nil) {
+            complete(std::move(state->callback), {
+                .status = Status::Failed,
+                .message = "Suggested export name is not valid UTF-8",
+            });
+            return;
+        }
+        NSError* stageError = nil;
+        NSFileManager* manager = NSFileManager.defaultManager;
+        if (![manager createDirectoryAtPath:directory
+                withIntermediateDirectories:YES
+                                 attributes:nil
+                                      error:&stageError])
+        {
+            complete(std::move(state->callback), {
+                .status = Status::Failed,
+                .message = error_message(stageError, "Unable to stage exported file"),
+            });
+            return;
+        }
+        state->temporaryDirectory = borealis::io::fs_path_from_utf8(directory.UTF8String);
+        NSString* source = [NSString stringWithUTF8String:
+            borealis::io::fs_path_to_string(exportPath).c_str()];
+        NSString* destination = [directory stringByAppendingPathComponent:suggestedName];
+        if (source == nil || ![manager copyItemAtPath:source toPath:destination error:&stageError]) {
+            complete(std::move(state->callback), {
+                .status = Status::Failed,
+                .message = error_message(stageError, "Unable to stage exported file"),
+            });
+            return;
+        }
+        exportPath = borealis::io::fs_path_from_utf8(destination.UTF8String);
+    }
+
+    NSString* path = [NSString stringWithUTF8String:
+        borealis::io::fs_path_to_string(exportPath).c_str()];
+    if (path == nil) {
+        complete(std::move(state->callback), {
+            .status = Status::Failed,
+            .message = "Export source path is not valid UTF-8",
+        });
+        return;
+    }
+    UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
+        initForExportingURLs:@[ [NSURL fileURLWithPath:path] ]
+                      asCopy:YES];
+    picker.shouldShowFileExtensions = YES;
     BorealisDocumentPickerDelegate* delegate = [BorealisDocumentPickerDelegate new];
     delegate.state = state.release();
     picker.delegate = delegate;

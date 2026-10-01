@@ -1,13 +1,17 @@
 #pragma once
 
+#include "borealis/task.hpp"
+
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace borealis::http {
 
-/** HTTP backend selected at configure time. */
+/** Configured HTTP backend. */
 enum class Backend {
     None,
     WinHttp,
@@ -23,7 +27,15 @@ enum class Error {
     UnsupportedScheme,
     Timeout,
     TooLarge,
+    Canceled,
+    Io,
     Network,
+};
+
+enum class Method {
+    Get,
+    Post,
+    Head,
 };
 
 struct Header {
@@ -32,9 +44,21 @@ struct Header {
 };
 
 struct Request {
+    Method method = Method::Get;
     std::string url;
     std::vector<Header> headers;
-    std::chrono::milliseconds timeout{10000};
+    std::string body;
+    /**
+     * File managed by the caller. Preserved on failure or cancellation. A non-empty file
+     * used by a GET request attempts to resume if existing metadata is available.
+     */
+    std::filesystem::path downloadTo;
+    std::chrono::milliseconds connectTimeout{10000};
+    /** Maximum time without network progress. */
+    std::chrono::milliseconds idleTimeout{10000};
+    /** Maximum total time in the request. */
+    std::optional<std::chrono::milliseconds> totalTimeout;
+    /** Maximum decoded response bytes. Ignored when downloadTo is set. */
     size_t maxBodyBytes = 1024 * 1024;
 };
 
@@ -55,7 +79,7 @@ bool available() noexcept;
 Backend backend() noexcept;
 const char* backend_name() noexcept;
 
-/** Performs a blocking HTTPS GET. Errors are returned in Result::error. */
-Result get(const Request& request);
+/** Starts an asynchronous HTTPS request. */
+Task<Result> start(Request request);
 
 }  // namespace borealis::http

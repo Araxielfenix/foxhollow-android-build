@@ -11,10 +11,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.util.Log;
+import android.webkit.MimeTypeMap;
 import android.view.Display;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -29,21 +31,28 @@ import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class BorealisActivity extends SDLActivity {
     private static final String TAG = "BorealisActivity";
     private static final float DEFAULT_SURFACE_FRAME_RATE = 60.0f;
     private static final int FOLDER_DIALOG_REQUEST_CODE = 0x4253;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 0x4254;
+    private static final int EXPORT_DIALOG_REQUEST_CODE = 0x4255;
     private static final String EXTERNAL_STORAGE_AUTHORITY =
         "com.android.externalstorage.documents";
 
     private long folderDialogUserdata = 0;
+    private boolean folderDialogRequiresRealPath = false;
     private boolean awaitingManageStoragePermission = false;
+    private long exportDialogUserdata = 0;
 
     private static native void nativeFolderDialogResult(
+        long userdata, String path, String error);
+    private static native void nativeExportDialogResult(
         long userdata, String path, String error);
 
     @Override
@@ -73,6 +82,10 @@ public class BorealisActivity extends SDLActivity {
         }
         if (requestCode == FOLDER_DIALOG_REQUEST_CODE) {
             finishFolderDialog(resultCode, data);
+            return;
+        }
+        if (requestCode == EXPORT_DIALOG_REQUEST_CODE) {
+            finishExportDialog(resultCode, data);
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
@@ -157,13 +170,14 @@ public class BorealisActivity extends SDLActivity {
     }
 
     /** Called by borealis::file_select through JNI. */
-    public boolean showFolderDialog(long userdata) {
+    public boolean showFolderDialog(long userdata, boolean requireRealPath) {
         if (userdata == 0 || folderDialogUserdata != 0) {
             return false;
         }
 
         folderDialogUserdata = userdata;
-        if (requiresManageStoragePermission() && !hasManageStoragePermission()) {
+        folderDialogRequiresRealPath = requireRealPath;
+        if (requireRealPath && requiresManageStoragePermission() && !hasManageStoragePermission()) {
             requestManageStoragePermission();
             return true;
         }
@@ -239,6 +253,7 @@ public class BorealisActivity extends SDLActivity {
     private void finishFolderDialogWithError(String error) {
         long userdata = folderDialogUserdata;
         folderDialogUserdata = 0;
+        folderDialogRequiresRealPath = false;
         awaitingManageStoragePermission = false;
         if (userdata != 0) {
             nativeFolderDialogResult(userdata, null, error);
@@ -248,21 +263,78 @@ public class BorealisActivity extends SDLActivity {
     private void finishFolderDialog(int resultCode, Intent data) {
         long userdata = folderDialogUserdata;
         folderDialogUserdata = 0;
+        boolean requireRealPath = folderDialogRequiresRealPath;
+        folderDialogRequiresRealPath = false;
         if (userdata == 0) {
             return;
         }
 
         if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
-            String path = getRealPathForUri(data.getData());
-            if (path != null && !path.isEmpty()) {
-                nativeFolderDialogResult(userdata, path, null);
-            } else {
-                nativeFolderDialogResult(
-                    userdata, null, "Selected folder is not available as a filesystem path");
+            Uri uri = data.getData();
+            if (!requireRealPath) {
+                nativeFolderDialogResult(userdata, uri.toString(), null);
+                return;
             }
+            String path = getRealPathForUri(uri);
+            if (path == null || path.isEmpty()) {
+                nativeFolderDialogResult(userdata, null,
+                    "Selected folder is not available as a filesystem path");
+                return;
+            }
+            nativeFolderDialogResult(userdata, path, null);
             return;
         }
         nativeFolderDialogResult(userdata, null, null);
+    }
+
+    /** Called by borealis::file_select through JNI. */
+    public boolean showExportDialog(long userdata, String suggestedName, String[] filterPatterns) {
+        if (userdata == 0 || exportDialogUserdata != 0) {
+            return false;
+        }
+        exportDialogUserdata = userdata;
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            intent.putExtra(Intent.EXTRA_TITLE, suggestedName);
+            String[] mimeTypes = mimeTypesForPatterns(filterPatterns);
+            intent.setType(mimeTypes.length == 1 ? mimeTypes[0] : "*/*");
+            if (mimeTypes.length > 1) {
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
+            }
+            try {
+                startActivityForResult(intent, EXPORT_DIALOG_REQUEST_CODE);
+            } catch (ActivityNotFoundException e) {
+                Log.w(TAG, "Unable to open export dialog.", e);
+                finishExportDialogWithError("Unable to open the Android export dialog");
+            }
+        });
+        return true;
+    }
+
+    private void finishExportDialog(int resultCode, Intent data) {
+        long userdata = exportDialogUserdata;
+        exportDialogUserdata = 0;
+        if (userdata == 0) {
+            return;
+        }
+        String path = resultCode == Activity.RESULT_OK && data != null && data.getData() != null
+            ? data.getData().toString()
+            : null;
+        // Copying can be large; enter native code from a Java-owned worker thread.
+        new Thread(() -> nativeExportDialogResult(userdata, path, null),
+            "Borealis file export").start();
+    }
+
+    private void finishExportDialogWithError(String error) {
+        long userdata = exportDialogUserdata;
+        exportDialogUserdata = 0;
+        if (userdata != 0) {
+            nativeExportDialogResult(userdata, null, error);
+        }
     }
 
     private String getRealPathForUri(Uri uri) {
@@ -405,8 +477,9 @@ public class BorealisActivity extends SDLActivity {
 
         Uri uri = Uri.parse(uriString);
         if ("content".equals(uri.getScheme())) {
+            Uri queryUri = documentUriFor(uri);
             try (Cursor cursor = getContentResolver().query(
-                uri, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null))
+                queryUri, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null))
             {
                 if (cursor != null && cursor.moveToFirst()) {
                     int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
@@ -432,6 +505,239 @@ public class BorealisActivity extends SDLActivity {
 
         String lastSegment = uri.getLastPathSegment();
         return lastSegment != null ? lastSegment : "";
+    }
+
+    /** Check persisted URI access. */
+    public boolean checkUri(String uriString) {
+        if (uriString == null || uriString.isEmpty()) {
+            return false;
+        }
+        Uri uri = Uri.parse(uriString);
+        if ("file".equals(uri.getScheme())) {
+            return uri.getPath() != null && new File(uri.getPath()).exists();
+        }
+        if (!"content".equals(uri.getScheme())) {
+            return false;
+        }
+        try (Cursor cursor = getContentResolver().query(documentUriFor(uri),
+            new String[] { DocumentsContract.Document.COLUMN_DOCUMENT_ID }, null, null, null))
+        {
+            return cursor != null && cursor.moveToFirst();
+        } catch (SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to access document URI " + uri, e);
+            return false;
+        }
+    }
+
+    /** Opens a content URI and transfers ownership of its descriptor to native code. */
+    public int openUriFileDescriptor(String uriString, String mode) {
+        if (uriString == null || uriString.isEmpty() || mode == null) {
+            return -1;
+        }
+        try {
+            ParcelFileDescriptor descriptor =
+                getContentResolver().openFileDescriptor(Uri.parse(uriString), mode);
+            return descriptor != null ? descriptor.detachFd() : -1;
+        } catch (FileNotFoundException | SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to open document URI " + uriString, e);
+            return -1;
+        }
+    }
+
+    /** Resolve an existing descendant. */
+    public String joinDocumentUri(String folderString, String relativePath) {
+        if (folderString == null || relativePath == null) {
+            return null;
+        }
+        Uri treeUri = Uri.parse(folderString);
+        if (!"content".equals(treeUri.getScheme()) || !isTreeDocumentUri(treeUri)) {
+            return null;
+        }
+
+        Uri current = documentUriFor(treeUri);
+        for (String segment : relativePath.split("[/\\\\]")) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                return null;
+            }
+            current = findDocumentChild(treeUri, current, segment);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current.toString();
+    }
+
+    /** Creates one document in a selected tree and returns its provider-authoritative URI. */
+    public String createDocumentUri(String folderString, String displayName) {
+        if (folderString == null || displayName == null || displayName.isEmpty()) {
+            return null;
+        }
+        Uri treeUri = Uri.parse(folderString);
+        if (!"content".equals(treeUri.getScheme()) || !isTreeDocumentUri(treeUri)) {
+            return null;
+        }
+        try {
+            Uri child = DocumentsContract.createDocument(getContentResolver(),
+                documentUriFor(treeUri), mimeTypeForName(displayName), displayName);
+            return child != null ? child.toString() : null;
+        } catch (FileNotFoundException | SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to create document " + displayName, e);
+            return null;
+        }
+    }
+
+    /** Removes a destination that could not be fully exported. */
+    public boolean deleteDocumentUri(String uriString) {
+        if (uriString == null || uriString.isEmpty()) {
+            return false;
+        }
+        try {
+            return DocumentsContract.deleteDocument(
+                getContentResolver(), Uri.parse(uriString));
+        } catch (FileNotFoundException | SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to remove incomplete document " + uriString, e);
+            return false;
+        }
+    }
+
+    private static String mimeTypeForName(String displayName) {
+        int separator = displayName.lastIndexOf('.');
+        if (separator >= 0 && separator + 1 < displayName.length()) {
+            String extension = displayName.substring(separator + 1).toLowerCase(Locale.ROOT);
+            String type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            if (type != null && !type.isEmpty()) {
+                return type;
+            }
+        }
+        return "application/octet-stream";
+    }
+
+    private static String[] mimeTypesForPatterns(String[] patterns) {
+        ArrayList<String> result = new ArrayList<>();
+        if (patterns != null) {
+            for (String pattern : patterns) {
+                if (pattern == null) {
+                    continue;
+                }
+                for (String extension : pattern.split(";")) {
+                    String normalized = extension.trim();
+                    while (normalized.startsWith("*.")) {
+                        normalized = normalized.substring(2);
+                    }
+                    while (normalized.startsWith(".")) {
+                        normalized = normalized.substring(1);
+                    }
+                    String type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                        normalized.toLowerCase(Locale.ROOT));
+                    if (type != null && !result.contains(type)) {
+                        result.add(type);
+                    }
+                }
+            }
+        }
+        return result.toArray(new String[0]);
+    }
+
+    /** Returns flat name, URI, directory triples for JNI. */
+    public String[] listDocumentUri(String folderString) {
+        if (folderString == null) {
+            return null;
+        }
+        Uri treeUri = Uri.parse(folderString);
+        if (!"content".equals(treeUri.getScheme()) || !isTreeDocumentUri(treeUri)) {
+            return null;
+        }
+        Uri folder = documentUriFor(treeUri);
+        String folderId;
+        try {
+            folderId = DocumentsContract.getDocumentId(folder);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderId);
+        ArrayList<String> result = new ArrayList<>();
+        String[] projection = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        };
+        try (Cursor cursor = getContentResolver().query(children, projection, null, null, null)) {
+            if (cursor == null) {
+                return null;
+            }
+            int idColumn = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+            int nameColumn = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+            int typeColumn = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_MIME_TYPE);
+            while (cursor.moveToNext()) {
+                String id = cursor.getString(idColumn);
+                String name = cursor.getString(nameColumn);
+                String type = cursor.getString(typeColumn);
+                if (id == null || name == null) {
+                    continue;
+                }
+                result.add(name);
+                result.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, id).toString());
+                result.add(DocumentsContract.Document.MIME_TYPE_DIR.equals(type) ? "1" : "0");
+            }
+        } catch (SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to list document URI " + treeUri, e);
+            return null;
+        }
+        return result.toArray(new String[0]);
+    }
+
+    private Uri documentUriFor(Uri uri) {
+        if (!isTreeDocumentUri(uri)) {
+            return uri;
+        }
+        try {
+            List<String> segments = uri.getPathSegments();
+            if (segments.size() >= 4 && "document".equals(segments.get(2))) {
+                return uri;
+            }
+            return DocumentsContract.buildDocumentUriUsingTree(
+                uri, DocumentsContract.getTreeDocumentId(uri));
+        } catch (IllegalArgumentException e) {
+            return uri;
+        }
+    }
+
+    private Uri findDocumentChild(Uri treeUri, Uri folder, String displayName) {
+        String folderId;
+        try {
+            folderId = DocumentsContract.getDocumentId(folder);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderId);
+        String[] projection = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+        };
+        // Some document providers do not implement query selection arguments.
+        try (Cursor cursor = getContentResolver().query(
+            children, projection, null, null, null))
+        {
+            if (cursor == null) {
+                return null;
+            }
+            int idColumn = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+            int nameColumn = cursor.getColumnIndex(
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+            while (cursor.moveToNext()) {
+                if (displayName.equals(cursor.getString(nameColumn))) {
+                    return DocumentsContract.buildDocumentUriUsingTree(
+                        treeUri, cursor.getString(idColumn));
+                }
+            }
+        } catch (SecurityException | IllegalArgumentException e) {
+            Log.w(TAG, "Unable to resolve child " + displayName + " in " + folder, e);
+        }
+        return null;
     }
 
     public void setPreferredSurfaceFrameRate(float frameRate) {

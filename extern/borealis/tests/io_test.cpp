@@ -1,0 +1,185 @@
+#include "borealis/io.hpp"
+
+#include <gtest/gtest.h>
+
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <span>
+#include <string>
+
+namespace {
+
+class IOTest : public testing::Test {
+protected:
+    void SetUp() override {
+        originalDirectory = std::filesystem::current_path();
+        directory = std::filesystem::temp_directory_path() / "borealis_io_test";
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+        std::filesystem::create_directories(directory / "nested");
+        std::ofstream{directory / "sample.txt", std::ios::binary} << "abcdef";
+        std::ofstream{directory / "nested" / "child.txt", std::ios::binary} << "child";
+    }
+
+    void TearDown() override {
+        std::filesystem::current_path(originalDirectory);
+        std::error_code ignored;
+        std::filesystem::remove_all(directory, ignored);
+    }
+
+    std::filesystem::path originalDirectory;
+    std::filesystem::path directory;
+};
+
+TEST_F(IOTest, StreamsAndSeeks) {
+    const auto location = borealis::io::fs_path_to_string(directory / "sample.txt");
+    auto opened = borealis::io::open(location);
+    ASSERT_EQ(opened.status, borealis::io::Status::Ok) << opened.message;
+    EXPECT_FALSE(opened.file.writable());
+    EXPECT_EQ(opened.file.size(), 6u);
+
+    std::array<char, 4> bytes{};
+    EXPECT_EQ(opened.file.read(bytes.data(), 3), 3u);
+    EXPECT_EQ(std::string_view(bytes.data(), 3), "abc");
+    ASSERT_TRUE(opened.file.seek(2));
+    EXPECT_EQ(opened.file.read(bytes.data(), 4), 4u);
+    EXPECT_EQ(std::string_view(bytes.data(), 4), "cdef");
+    EXPECT_TRUE(opened.file.close());
+    EXPECT_FALSE(opened.file.writable());
+}
+
+TEST_F(IOTest, RandomAccessFileStaysBoundAcrossRenameAndDelete) {
+    auto opened = borealis::io::RandomAccessFile::open(directory / "sample.txt");
+    ASSERT_EQ(opened.status, borealis::io::Status::Ok) << opened.message;
+    EXPECT_EQ(opened.file.size(), 6u);
+
+    const auto renamed = directory / "renamed.txt";
+    std::filesystem::rename(directory / "sample.txt", renamed);
+    std::ofstream{directory / "sample.txt", std::ios::binary} << "replacement";
+
+    std::array<char, 4> bytes{};
+    std::error_code error;
+    EXPECT_EQ(opened.file.read_at(2, std::as_writable_bytes(std::span{bytes}), error), 4u);
+    EXPECT_FALSE(error);
+    EXPECT_EQ(std::string_view(bytes.data(), bytes.size()), "cdef");
+
+    EXPECT_TRUE(std::filesystem::remove(renamed));
+    bytes.fill(0);
+    EXPECT_EQ(opened.file.read_at(0, std::as_writable_bytes(std::span{bytes}), error), 4u);
+    EXPECT_FALSE(error);
+    EXPECT_EQ(std::string_view(bytes.data(), bytes.size()), "abcd");
+}
+
+TEST_F(IOTest, AtomicReplacePreservesOpenReaders) {
+    const auto destination = directory / "sample.txt";
+    auto original = borealis::io::RandomAccessFile::open(destination);
+    ASSERT_EQ(original.status, borealis::io::Status::Ok) << original.message;
+    const auto staged = directory / "staged.txt";
+    std::ofstream{staged, std::ios::binary} << "replacement";
+
+    std::string message;
+    ASSERT_TRUE(borealis::io::atomic_replace(staged, destination, message)) << message;
+    EXPECT_FALSE(std::filesystem::exists(staged));
+    auto replacement = borealis::io::RandomAccessFile::open(destination);
+    ASSERT_EQ(replacement.status, borealis::io::Status::Ok) << replacement.message;
+    EXPECT_EQ(original.file.size(), 6u);
+    EXPECT_EQ(replacement.file.size(), 11u);
+
+    std::array<char, 4> bytes{};
+    std::error_code error;
+    EXPECT_EQ(original.file.read_at(2, std::as_writable_bytes(std::span{bytes}), error), 4u);
+    EXPECT_FALSE(error);
+    EXPECT_EQ(std::string_view(bytes.data(), bytes.size()), "cdef");
+    EXPECT_EQ(replacement.file.read_at(0, std::as_writable_bytes(std::span{bytes}), error), 4u);
+    EXPECT_FALSE(error);
+    EXPECT_EQ(std::string_view(bytes.data(), bytes.size()), "repl");
+    ASSERT_TRUE(original.file.close());
+    EXPECT_EQ(std::filesystem::file_size(destination), 11u);
+}
+
+TEST_F(IOTest, AtomicReplaceCreatesRelativeUnicodeDestination) {
+    const auto destination = directory / std::filesystem::path{u8"réplacement.txt"};
+    std::filesystem::current_path(directory);
+    const auto relative = destination.filename();
+    std::string message;
+    ASSERT_TRUE(borealis::io::atomic_replace(directory / "sample.txt", relative, message)) << message;
+    EXPECT_FALSE(std::filesystem::exists(directory / "sample.txt"));
+    EXPECT_EQ(std::filesystem::file_size(destination), 6u);
+}
+
+TEST_F(IOTest, AtomicReplaceFailurePreservesFiles) {
+    std::string message;
+    const auto source = directory / "sample.txt";
+    EXPECT_FALSE(borealis::io::atomic_replace(directory / "missing.txt", source, message));
+    EXPECT_FALSE(message.empty());
+    EXPECT_EQ(std::filesystem::file_size(source), 6u);
+
+    message.clear();
+    EXPECT_FALSE(borealis::io::atomic_replace(source, directory / "nested", message));
+    EXPECT_FALSE(message.empty());
+    EXPECT_EQ(std::filesystem::file_size(source), 6u);
+    EXPECT_EQ(std::filesystem::file_size(directory / "nested" / "child.txt"), 5u);
+}
+
+TEST_F(IOTest, ChecksListsAndJoins) {
+    const auto folder = borealis::io::fs_path_to_string(directory);
+    EXPECT_EQ(borealis::io::check(folder), borealis::io::Status::Ok);
+    EXPECT_EQ(borealis::io::check(folder + "/missing"), borealis::io::Status::NotFound);
+
+    const auto joined = borealis::io::join(folder, "nested/child.txt");
+    ASSERT_EQ(joined.status, borealis::io::Status::Ok) << joined.message;
+    EXPECT_EQ(borealis::io::display_name(joined.location), "child.txt");
+    EXPECT_NE(borealis::io::join(folder, "../sample.txt").status, borealis::io::Status::Ok);
+
+    const auto listed = borealis::io::list(folder);
+    ASSERT_EQ(listed.status, borealis::io::Status::Ok) << listed.message;
+    ASSERT_EQ(listed.entries.size(), 2u);
+    EXPECT_EQ(listed.entries[0].name, "nested");
+    EXPECT_TRUE(listed.entries[0].isDirectory);
+    EXPECT_EQ(listed.entries[1].name, "sample.txt");
+    EXPECT_FALSE(listed.entries[1].isDirectory);
+}
+
+TEST_F(IOTest, WritesTruncatesAndAppends) {
+    const auto location = borealis::io::fs_path_to_string(directory / "sample.txt");
+    auto writer = borealis::io::open(location, borealis::io::File::Mode::Truncate);
+    ASSERT_EQ(writer.status, borealis::io::Status::Ok) << writer.message;
+    EXPECT_TRUE(writer.file.writable());
+    const std::string first = "first";
+    EXPECT_TRUE(writer.file.write(std::as_bytes(std::span{first})));
+    EXPECT_TRUE(writer.file.flush());
+    EXPECT_TRUE(writer.file.close());
+    EXPECT_FALSE(writer.file.writable());
+
+    writer = borealis::io::open(location, borealis::io::File::Mode::Append);
+    ASSERT_EQ(writer.status, borealis::io::Status::Ok) << writer.message;
+    EXPECT_TRUE(writer.file.writable());
+    const std::string second = "+second";
+    EXPECT_TRUE(writer.file.write(std::as_bytes(std::span{second})));
+    EXPECT_TRUE(writer.file.close());
+
+    std::ifstream input{directory / "sample.txt", std::ios::binary};
+    const std::string contents{
+        std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    EXPECT_EQ(contents, "first+second");
+
+    auto reader = borealis::io::open(location);
+    ASSERT_EQ(reader.status, borealis::io::Status::Ok) << reader.message;
+    EXPECT_FALSE(reader.file.write(std::as_bytes(std::span{first})));
+}
+
+TEST_F(IOTest, CreatesOneSafeChildWithoutReplacing) {
+    const auto folder = borealis::io::fs_path_to_string(directory);
+    const auto created = borealis::io::create_child(folder, "created.txt");
+    ASSERT_EQ(created.status, borealis::io::Status::Ok) << created.message;
+    EXPECT_EQ(borealis::io::check(created.location), borealis::io::Status::Ok);
+    EXPECT_EQ(borealis::io::create_child(folder, "created.txt").status,
+        borealis::io::Status::AlreadyExists);
+    EXPECT_EQ(borealis::io::create_child(folder, "nested/created.txt").status,
+        borealis::io::Status::Failed);
+    EXPECT_EQ(
+        borealis::io::create_child(folder, "../created.txt").status, borealis::io::Status::Failed);
+}
+
+}  // namespace

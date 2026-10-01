@@ -1,0 +1,10 @@
+prefix=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix
+exec_prefix=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix
+libdir=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix/lib
+includedir=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix/include
+
+Name: libturbojpeg
+Description: A SIMD-accelerated JPEG codec that provides the TurboJPEG API
+Version: 3.0.4
+Libs: -L${libdir} -lturbojpeg
+Cflags: -I${includedir}

@@ -1,33 +1,112 @@
-// app/build.gradle - Simplified for build testing
+// app/build.gradle - Configuración nativa completa
 plugins {
     id 'com.android.application'
 }
 
+// Toolchain used by the native build. aurora is compiled against NDK 27 because its
+// libc++ gates std::jthread / std::stop_token behind _LIBCPP_ENABLE_EXPERIMENTAL, which we
+// pass through CMAKE_CXX_FLAGS below.
+def fhNdkVersion = "27.2.12479018"
+
+// Rust host toolchain. nod (the DVD/filesystem backend) is built from source through Corrosion,
+// and the default toolchain on this machine has no linker for host build scripts, so the GNU
+// toolchain is selected explicitly and its bundled dlltool is put on PATH by the caller.
+def rustToolchain = "${System.getProperty('user.home')}/.rustup/toolchains/stable-x86_64-pc-windows-gnu/bin"
+
 android {
     namespace 'dev.encounter.foxhollow'
     compileSdk 34
-    
+    ndkVersion fhNdkVersion
+
     defaultConfig {
         applicationId "dev.encounter.foxhollow"
         minSdk 24
         targetSdk 34
         versionCode 1
         versionName "0.1.0"
-        
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        testInstrumentationRunner "androidx.testrunner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static',
+                          '-DANDROID_PLATFORM=android-24',
+                          '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
+                          // libc++ hides std::jthread / std::stop_token behind this until the
+                          // experimental set is enabled; aurora/lib/thread.hpp needs both.
+                          '-DCMAKE_C_FLAGS=-D_LIBCPP_ENABLE_EXPERIMENTAL',
+                          '-DCMAKE_CXX_FLAGS=-D_LIBCPP_ENABLE_EXPERIMENTAL',
+                          '-DFOXHOLLOW_STATIC_JPEG=ON',
+                          "-DJPEG_INCLUDE_DIR=${rootDir}/third_party/jpeg-turbo-arm64/include",
+                          "-DJPEG_LIBRARY=${rootDir}/third_party/jpeg-turbo-arm64/lib/libjpeg.a",
+                          "-DRust_COMPILER=${rustToolchain}/rustc.exe",
+                          "-DRust_CARGO=${rustToolchain}/cargo.exe",
+                          "-DCORROSION_CARGO=${rustToolchain}/cargo.exe"
+                cFlags '-O2'
+                cppFlags '-O2', '-std=c++20'
+                targets 'foxhollow'
+            }
+        }
     }
-    
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
+
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
+
+    externalNativeBuild {
+        cmake {
+            // The port builds Aurora, Borealis, nod, SDL3 and the game itself from the
+            // repository root; app/src/main/cpp only ever held the stub experiment.
+            path file("${rootDir}/CMakeLists.txt")
+            version '3.31.6'
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    // SDL3's org.libsdl.app classes come from the source tree CMake vendors during the native
+    // build. Aurora's own Android surface class is shipped in this module instead, so Aurora's
+    // platforms/android/java is deliberately not added here.
+    sourceSets {
+        main {
+            java.srcDirs += [
+                "${rootDir}/build-android-arm64-v8a/_deps/sdl-src/android-project/app/src/main/java"
+            ]
+        }
+    }
+}
+
+// aurora's PNG dependency builds a shared libpng16 that libfoxhollow.so links against, but it is
+// not one of our CMake targets, so Gradle never packages it. Stage it next to the other jniLibs
+// before packaging.
+def stageExtraJniLibs = tasks.register('stageExtraJniLibs', Copy) {
+    from(fileTree(dir: "${rootDir}/build-android-arm64-v8a", includes: ['**/libpng16.so'])) {
+        exclude '**/CMakeFiles/**'
+    }
+    // Flatten: only the .so should land here, never a copy of the native build tree.
+    eachFile { it.path = it.name }
+    includeEmptyDirs = false
+    into layout.projectDirectory.dir('src/main/jniLibs/arm64-v8a')
+}
+
+tasks.named('preBuild').configure {
+    dependsOn stageExtraJniLibs
 }
 
 dependencies {

@@ -14,6 +14,41 @@ if (NOT TARGET gtest)
   FetchContent_MakeAvailable(googletest)
 endif ()
 
+add_executable(io_tests
+  io_test.cpp
+  ../lib/card/FileIO.cpp
+  ../lib/io.cpp
+)
+target_include_directories(io_tests PRIVATE ../lib)
+target_link_libraries(io_tests PRIVATE gtest gtest_main ${AURORA_SDL3_TARGET})
+aurora_copy_runtime_dlls(io_tests)
+gtest_discover_tests(io_tests)
+
+add_executable(time_tests
+  time_test.cpp
+  ../lib/time.cpp
+)
+target_include_directories(time_tests PRIVATE
+  ../include
+  ../lib
+)
+target_link_libraries(time_tests PRIVATE gtest gtest_main)
+gtest_discover_tests(time_tests)
+
+add_executable(os_time_tests
+  os_time_test.cpp
+  os_time_test_stubs.cpp
+  ../lib/time.cpp
+  ../lib/dolphin/os/OSTime.cpp
+)
+target_include_directories(os_time_tests PRIVATE
+  ../include
+  ../lib
+)
+target_compile_definitions(os_time_tests PRIVATE AURORA TARGET_PC)
+target_link_libraries(os_time_tests PRIVATE fmt::fmt gtest gtest_main)
+gtest_discover_tests(os_time_tests)
+
 if (AURORA_ENABLE_GX)
   # GX FIFO round-trip tests
   # Compile GX sources directly to avoid pulling in the full renderer/WebGPU runtime
@@ -43,6 +78,8 @@ if (AURORA_ENABLE_GX)
     # FIFO/command processor (encoder + decoder)
     ../lib/gx/fifo.cpp
     ../lib/gx/command_processor.cpp
+    ../lib/gx/regs.cpp
+    ../lib/thread.cpp
     # Display list reader/optimizer
     ../lib/gx/attr_fmt.cpp
     ../lib/gx/dl.cpp
@@ -113,7 +150,9 @@ if (AURORA_ENABLE_GX)
 
   add_executable(render_worker_tests
     render_worker_test.cpp
+    thread_test.cpp
     ../lib/gfx/render_worker.cpp
+    ../lib/thread.cpp
   )
   target_include_directories(render_worker_tests PRIVATE
     ../include
@@ -124,6 +163,7 @@ if (AURORA_ENABLE_GX)
     gtest
     gtest_main
     TracyClient
+    ${AURORA_SDL3_TARGET}
   )
   gtest_discover_tests(render_worker_tests)
 endif () # AURORA_ENABLE_GX
@@ -136,6 +176,7 @@ if (TARGET aurora::dvd)
     ../lib/logging.cpp
   )
   target_link_libraries(dvd_tests PRIVATE aurora::dvd gtest gtest_main)
+  aurora_copy_runtime_dlls(dvd_tests)
 
   # Pass disc image path as a compile definition if provided
   if (DEFINED DVD_TEST_IMAGE AND EXISTS "${DVD_TEST_IMAGE}")

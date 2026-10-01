@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- backup_rules.xml - Reglas de copia de seguridad (Android 11-) -->
+<full-backup-content>
+    <exclude domain="external" path="." />
+</full-backup-content>

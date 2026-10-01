@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -21,6 +22,9 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.ViewGroup;
+import android.view.KeyEvent;
+import android.window.OnBackInvokedDispatcher;
 
 import dev.encounter.aurora.AuroraSurface;
 import dev.encounter.borealis.BorealisSurface;
@@ -53,34 +57,222 @@ public class FoxhollowActivity extends SDLActivity {
     private static native void nativeSetGamePath(String path);
     private static native void nativeInitJNI();
 
+    /**
+     * Feeds the on-screen controls into controller slot 0.
+     *
+     * Called from the UI thread on every touch change; Aurora merges this on top of any real
+     * controller, so it does not need to go through SDL's controller layer.
+     */
+    private static native void nativeSetVirtualPad(int buttonMask, int stickX, int stickY);
+    private static native void nativeClearVirtualPad();
+
+    /** Presented frames per second, straight from Aurora's present timestamps. */
+    private static native float nativeGetFps();
+
+    /** Live render scale; applies on the next frame without a restart. */
+    private static native void nativeSetRenderScale(float scale);
+
+    /** 0 = 4:3, 1 = 16:9, 2 = stretched to the display. */
+    private static native void nativeSetDisplayMode(int mode);
+
+    private TouchControlsView touchControls;
+    private SettingsMenuView settingsMenu;
+    private FpsOverlayView fpsOverlay;
+    private TouchControlSettings touchSettings;
+
     static {
-        // Load native libraries in order of dependency
-        // Order matters: zlib -> jpeg -> SDL3 -> Dawn/WebGPU -> nod -> Aurora -> Borealis -> Foxhollow
-        System.loadLibrary("z");
-        System.loadLibrary("jpeg");
-        System.loadLibrary("SDL3");
-        System.loadLibrary("dawn");
-        System.loadLibrary("nod");
-        System.loadLibrary("aurora_core");
-        System.loadLibrary("aurora_gx");
-        System.loadLibrary("aurora_dvd");
-        System.loadLibrary("aurora_card");
-        System.loadLibrary("borealis");
+        // Aurora, Borealis, nod, SDL3, libjpeg and zlib are linked statically into
+        // libfoxhollow.so, so this is the only native library to load.
         System.loadLibrary("foxhollow");
-        
-        // Initialize JNI after libraries loaded
+
         nativeInitJNI();
+    }
+
+    /**
+     * SDL3 usa este metodo para saber que biblioteca nativa principal cargar.
+     * La clase base espera "main", pero el port construye "foxhollow".
+     */
+    @Override
+    protected String[] getLibraries() {
+        return new String[] { "foxhollow" };
+    }
+    /**
+     * Devuelve la instancia activa de la actividad.
+     *
+     * SDL3 expone la instancia actual como el campo protegido {@code mSingleton},
+     * al que esta clase accede por herencia. Se envuelve en un metodo estatico
+     * propio porque el codigo nativo necesita resolver la actividad en tiempo
+     * de ejecucion, fuera de cualquier instancia.
+     */
+    private static Activity currentActivity() {
+        return mSingleton;
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
+
         // Hide system bars for immersive gameplay
         hideSystemBars();
-        
+
+        installTouchControls();
+
+        registerBackHandler();
+
         // Handle intent for opening game files
         handleIntent(getIntent());
+    }
+
+    /**
+ * Puts the on-screen controls on top of SDL's surface.
+ *
+ * mLayout is the RelativeLayout SDLActivity builds for its SurfaceView, so adding siblings there
+ * keeps the game's own view untouched while still drawing above it. The menu and the FPS counter
+ * go on last so they sit above the controls and win the touch, which is what stops a slider drag
+ * from also steering the game.
+ */
+    private void installTouchControls() {
+        if (mLayout == null || touchControls != null) {
+            return;
+        }
+
+        touchSettings = new TouchControlSettings(this);
+
+        touchControls = new TouchControlsView(this, touchSettings);
+        touchControls.setOnMenuGestureListener(new TouchControlsView.OnMenuGestureListener() {
+            @Override
+            public void onMenuGesture() {
+                showSettingsMenu();
+            }
+        });
+        mLayout.addView(touchControls, matchParent());
+
+        fpsOverlay = new FpsOverlayView(this);
+        fpsOverlay.setVisibility(touchSettings.showFps ? View.VISIBLE : View.GONE);
+        mLayout.addView(fpsOverlay, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        settingsMenu = new SettingsMenuView(this, touchSettings, touchControls,
+                new SettingsMenuView.SettingsHost() {
+                    @Override
+                    public void onSettingsChanged(TouchControlSettings settings) {
+                        applySettings(settings);
+                    }
+
+                    @Override
+                    public void onExitRequested() {
+                        hideSettingsMenu();
+                        finish();
+                    }
+                });
+        settingsMenu.setVisibility(View.GONE);
+        mLayout.addView(settingsMenu, matchParent());
+
+        // The game reads its own scale from the environment at startup, so the saved value has to
+        // be pushed in afterwards for it to take effect on this launch.
+        nativeSetRenderScale(touchSettings.renderScale);
+        nativeSetDisplayMode(touchSettings.displayMode);
+    }
+
+    private static ViewGroup.LayoutParams matchParent() {
+        return new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
+    private void applySettings(TouchControlSettings settings) {
+        nativeSetRenderScale(settings.renderScale);
+        nativeSetDisplayMode(settings.displayMode);
+        if (fpsOverlay != null) {
+            fpsOverlay.setVisibility(settings.showFps ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void showSettingsMenu() {
+        if (settingsMenu == null) {
+            return;
+        }
+        releaseControls();
+        settingsMenu.refresh();
+        settingsMenu.setVisibility(View.VISIBLE);
+    }
+
+    private void hideSettingsMenu() {
+        if (settingsMenu != null) {
+            settingsMenu.setVisibility(View.GONE);
+        }
+    }
+
+    private void releaseControls() {
+        if (touchControls != null) {
+            touchControls.releaseAll();
+        }
+        nativeClearVirtualPad();
+    }
+
+    /** Used by the FPS overlay; kept static so the view does not hold the activity. */
+    static float getFps() {
+        return nativeGetFps();
+    }
+
+    /**
+     * Back opens the settings menu instead of leaving the game.
+     *
+     * Leaving is only possible from the menu, so a stray press cannot drop the player out of a
+     * run; back again closes the menu.
+     */
+    @Override
+    public void onBackPressed() {
+        handleBack();
+    }
+
+    /**
+     * Takes the back key before SDL sees it.
+     *
+     * SDLActivity forwards KEYCODE_BACK into the game's event loop and swallows the system
+     * behaviour, so onBackPressed() never runs on this path. Intercepting it here is what makes
+     * the key reach the settings menu; every other key still goes to SDL.
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                handleBack();
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private void handleBack() {
+        if (settingsMenu != null && settingsMenu.getVisibility() == View.VISIBLE) {
+            hideSettingsMenu();
+            return;
+        }
+        showSettingsMenu();
+    }
+
+    /**
+     * Registers the same handler on the modern back dispatcher.
+     *
+     * From targetSdk 33 the system only skips onBackPressed() when the app opts into predictive
+     * back through the manifest, so both entry points are wired to one handler to stay correct
+     * either way.
+     */
+    private void registerBackHandler() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return;
+        }
+
+        OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
+        if (dispatcher != null) {
+            dispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_OVERLAY, this::handleBack);
+        }
+    }
+
+    /** Bridges the overlay to native; kept static to avoid leaking the activity. */
+    static void setVirtualPad(int buttonMask, int stickX, int stickY) {
+        nativeSetVirtualPad(buttonMask, stickX, stickY);
     }
 
     @Override
@@ -167,11 +359,15 @@ public class FoxhollowActivity extends SDLActivity {
     protected void onResume() {
         super.onResume();
         hideSystemBars();
-        
+
+        // SDLActivity hands the view back without clearing touches, so anything held when the
+        // app went away would still be down on return.
+        releaseControls();
+
         if (awaitingManageStoragePermission) {
             requestManageStoragePermission();
         }
-        
+
         // Set pending game path if available
         if (pendingGamePath != null) {
             nativeSetGamePath(pendingGamePath);
@@ -182,7 +378,18 @@ public class FoxhollowActivity extends SDLActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        // Game will handle pause via native code
+        // A finger lifted while the activity is not in front is never delivered, which would
+        // leave a direction or trigger stuck down.
+        releaseControls();
+        hideSettingsMenu();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) {
+            releaseControls();
+        }
     }
 
     @Override
@@ -197,7 +404,7 @@ public class FoxhollowActivity extends SDLActivity {
         
         if (requestCode == MANAGE_STORAGE_REQUEST_CODE) {
             awaitingManageStoragePermission = false;
-            if (grantResults.length > 0 && grantResults[0] == Activity.RESULT_GRANTED) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Log.i(TAG, "Manage storage permission granted");
             } else {
                 Log.w(TAG, "Manage storage permission denied");
@@ -236,7 +443,7 @@ public class FoxhollowActivity extends SDLActivity {
      * @param userdata User data to pass back to native callback
      */
     public static void showFolderDialog(long userdata) {
-        Activity activity = SDLActivity.getActivity();
+        Activity activity = currentActivity();
         if (activity instanceof FoxhollowActivity) {
             FoxhollowActivity self = (FoxhollowActivity) activity;
             self.folderDialogUserdata = userdata;
@@ -278,15 +485,24 @@ public class FoxhollowActivity extends SDLActivity {
     }
 
     private void hideSystemBars() {
+        Window window = getWindow();
+        if (window == null) {
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            WindowInsetsController controller = getWindow().getInsetsController();
+            // getWindow().getInsetsController() lanza NullPointerException si el
+            // DecorView todavia no esta adjunto, algo que ocurre al llamar desde
+            // onCreate(). Hay que pasar por getDecorView() y tolerar un controlador nulo.
+            View decorView = window.getDecorView();
+            WindowInsetsController controller = decorView.getWindowInsetsController();
             if (controller != null) {
                 controller.hide(WindowInsets.Type.systemBars() | WindowInsets.Type.navigationBars());
                 controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
         } else {
             // Legacy approach for older Android versions
-            getWindow().getDecorView().setSystemUiVisibility(
+            window.getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -301,7 +517,7 @@ public class FoxhollowActivity extends SDLActivity {
      * Called from native code to request game path selection
      */
     public static void requestGamePath() {
-        Activity activity = SDLActivity.getActivity();
+        Activity activity = currentActivity();
         if (activity instanceof FoxhollowActivity) {
             FoxhollowActivity self = (FoxhollowActivity) activity;
             self.showFolderDialog(0); // userdata = 0 for initial game selection

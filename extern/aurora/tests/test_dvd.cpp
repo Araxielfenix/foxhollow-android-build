@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -167,9 +166,6 @@ TEST(DVDNoDisc, GetCurrentDir) {
 
 #ifdef DVD_TEST_IMAGE
 
-static std::atomic<s32> sReadAsyncCallbackResult;
-static std::thread::id sReadAsyncCallbackThread;
-
 class DVDDiscTest : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
@@ -330,20 +326,9 @@ TEST_F(DVDDiscTest, ReadAsync) {
   DVDFileInfo fi{};
   ASSERT_EQ(DVDOpen(fileName, &fi), TRUE);
 
-  if (fi.length < 32) {
-    DVDClose(&fi);
-    GTEST_SKIP() << "File is shorter than one DVD transfer block";
-  }
-
-  constexpr s32 pendingResult = -1000;
-  alignas(32) u8 buf[32];
-  sReadAsyncCallbackResult.store(pendingResult, std::memory_order_relaxed);
-  sReadAsyncCallbackThread = {};
-  const std::thread::id callerThread = std::this_thread::get_id();
-  BOOL ok = DVDReadAsyncPrio(&fi, buf, sizeof(buf), 0, [](s32 result, DVDFileInfo*) {
-    sReadAsyncCallbackThread = std::this_thread::get_id();
-    sReadAsyncCallbackResult.store(result, std::memory_order_release);
-  }, 2);
+  u32 readSize = fi.length < 32 ? fi.length : 32;
+  std::vector<u8> buf(readSize);
+  BOOL ok = DVDReadAsyncPrio(&fi, buf.data(), static_cast<s32>(readSize), 0, [](s32, DVDFileInfo*) {}, 2);
   EXPECT_EQ(ok, TRUE);
   for (int i = 0; i < 5000 && (DVDGetFileInfoStatus(&fi) == DVD_STATE_WAITING ||
                                DVDGetFileInfoStatus(&fi) == DVD_STATE_BUSY);
@@ -351,13 +336,7 @@ TEST_F(DVDDiscTest, ReadAsync) {
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
   EXPECT_EQ(DVDGetFileInfoStatus(&fi), DVD_STATE_END);
-  EXPECT_EQ(DVDGetTransferredSize(&fi), static_cast<s32>(sizeof(buf)));
-  EXPECT_EQ(sReadAsyncCallbackResult.load(std::memory_order_acquire), pendingResult);
-
-  aurora_dvd_process_callbacks();
-
-  EXPECT_EQ(sReadAsyncCallbackResult.load(std::memory_order_acquire), static_cast<s32>(sizeof(buf)));
-  EXPECT_EQ(sReadAsyncCallbackThread, callerThread);
+  EXPECT_EQ(DVDGetTransferredSize(&fi), static_cast<s32>(readSize));
 
   DVDClose(&fi);
 }

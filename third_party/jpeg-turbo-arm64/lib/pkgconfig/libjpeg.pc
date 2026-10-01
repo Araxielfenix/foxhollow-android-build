@@ -1,0 +1,10 @@
+prefix=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix
+exec_prefix=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix
+libdir=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix/lib
+includedir=C:/Users/araxi/AppData/Local/Temp/jpegbuild/prefix/include
+
+Name: libjpeg
+Description: A SIMD-accelerated JPEG codec that provides the libjpeg API
+Version: 3.0.4
+Libs: -L${libdir} -ljpeg
+Cflags: -I${includedir}

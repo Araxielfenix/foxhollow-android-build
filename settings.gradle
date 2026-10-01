@@ -16,10 +16,10 @@ ext {
     compileSdkVersion = 34
     minSdkVersion = 24          // Android 7.0 (API 24) - Aurora requires this minimum
     targetSdkVersion = 34
-    ndkVersion = "26.1.10909125"
+    ndkVersion = "27.2.12479018"
     
     // CMake version
-    cmakeVersion = "3.22.1"
+    cmakeVersion = "3.31.6"
     
     // Build variants
     abiFilters = ['arm64-v8a']  // Start with arm64 for performance, can add 'x86_64' later

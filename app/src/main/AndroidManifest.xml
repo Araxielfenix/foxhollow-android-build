@@ -85,18 +85,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Documents Provider for SAF (Storage Access Framework) -->
-        <provider
-            android:name="dev.encounter.borealis.BorealisDocumentsProvider"
-            android:authorities="${applicationId}.documents"
-            android:exported="true"
-            android:grantUriPermissions="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
-
         <!-- Native library loading -->
         <meta-data
             android:name="android.app.lib_name"

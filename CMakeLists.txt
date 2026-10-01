@@ -88,20 +88,40 @@ if (FOXHOLLOW_GAME_SOURCES)
             ${FOXHOLLOW_PATCHABLE_ENTRY_FLAGS})
 endif ()
 
-add_executable(foxhollow src/main.c)
-target_include_directories(foxhollow PRIVATE port/include)
-target_link_libraries(foxhollow PRIVATE
-        ZLIB::ZLIB
-        port_shims
-        aurora::core aurora::gx aurora::main aurora::vi
-        aurora::os aurora::pad aurora::dvd aurora::card
-        aurora::mtx aurora::si aurora::gd aurora::ms)
+if (ANDROID)
+    # Android has no process entry point: SDLActivity loads libfoxhollow.so and resolves
+    # SDL_main from it. port/android/foxhollow_android.c owns that symbol and forwards to
+    # aurora_main, so aurora_main.cmake (which only provides aurora's own main) is not used.
+    add_library(foxhollow SHARED
+            src/main.c
+            port/android/foxhollow_android.cpp)
+    target_include_directories(foxhollow PRIVATE port/include)
+    target_link_libraries(foxhollow PRIVATE
+            ZLIB::ZLIB
+            port_shims
+            aurora::core aurora::gx aurora::vi
+            aurora::os aurora::pad aurora::dvd aurora::card
+            aurora::mtx aurora::si aurora::gd aurora::ms
+            log)
+    # SDL_main lives in a static archive that nothing references at link time, so ask for it
+    # explicitly; without it SDLActivity's dlsym cannot find the entry point.
+    target_link_options(foxhollow PRIVATE "-Wl,--undefined=SDL_main")
+else ()
+    add_executable(foxhollow src/main.c)
+    target_include_directories(foxhollow PRIVATE port/include)
+    target_link_libraries(foxhollow PRIVATE
+            ZLIB::ZLIB
+            port_shims
+            aurora::core aurora::gx aurora::main aurora::vi
+            aurora::os aurora::pad aurora::dvd aurora::card
+            aurora::mtx aurora::si aurora::gd aurora::ms)
+endif ()
+
 if (TARGET game)
     foxhollow_link_whole_archive(foxhollow game)
     add_dependencies(foxhollow game)
     set_target_properties(foxhollow PROPERTIES LINK_DEPENDS $<TARGET_FILE:game>)
 endif ()
-
 set_target_properties(foxhollow PROPERTIES ENABLE_EXPORTS ON)
 
 if (APPLE)
@@ -111,8 +131,10 @@ if (APPLE)
             COMMENT "Re-signing with get-task-allow so lldb can attach")
 endif ()
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
-aurora_copy_runtime_dlls(foxhollow)
+if (NOT ANDROID)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
+    aurora_copy_runtime_dlls(foxhollow)
+endif ()
 
 file(GLOB FOXHOLLOW_SHIM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/port/src/*.c)
 list(APPEND FOXHOLLOW_SHIM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/port/src/crash_handler.cpp)
@@ -161,7 +183,7 @@ if (WIN32 AND TARGET game)
     target_link_options(foxhollow PRIVATE /DEF:${FOXHOLLOW_EXPORTS_DEF})
 endif ()
 
-if (TARGET game)
+if (TARGET game AND NOT ANDROID)
     add_executable(linkcheck EXCLUDE_FROM_ALL src/main.c)
     target_link_libraries(linkcheck PRIVATE
             ZLIB::ZLIB

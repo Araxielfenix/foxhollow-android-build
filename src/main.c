@@ -12,9 +12,31 @@
 #include "foxhollow_crash.h"
 #include "foxhollow_mods.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+
+/* Android discards stdout/stderr, so progress and error messages need logcat to be visible. */
+static void report(const char* fmt, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  __android_log_print(ANDROID_LOG_ERROR, "foxhollow", "%s", buffer);
+}
+#else
+static void report(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+}
+#endif
 
 int gameMain(int argc, char** argv);
 void foxhollowFramePumpInit(void);
@@ -70,7 +92,14 @@ static void log_callback(AuroraLogLevel level, const char* module, const char* m
     out = stderr;
     break;
   }
+
+#if defined(__ANDROID__)
+  /* Android discards stdout/stderr, so Aurora's log module would be invisible. */
+  __android_log_print(level == LOG_ERROR || level == LOG_FATAL ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO, "foxhollow",
+                      "[%s] %s: %s", levelStr, module, message);
+#else
   fprintf(out, "[%s] %s: %s\n", levelStr, module, message);
+#endif
   if (level == LOG_FATAL) {
     fflush(out);
     abort();
@@ -105,7 +134,7 @@ static const char* prepare_directory(const char* path) {
     return NULL;
   }
   if (!SDL_CreateDirectory(path)) {
-    fprintf(stderr, "foxhollow: failed to create directory %s: %s\n", path, SDL_GetError());
+    report("foxhollow: failed to create directory %s: %s\n", path, SDL_GetError());
     return NULL;
   }
   return path;
@@ -118,11 +147,11 @@ int main(int argc, char* argv[]) {
   const FoxhollowDiscMapping* mapping;
   const int revision = fhConfigRevision();
   if (revision < 0) {
-    fprintf(stderr, "foxhollow: FOXHOLLOW_REV must be 0 or 1\n");
+    report("foxhollow: FOXHOLLOW_REV must be 0 or 1\n");
     return 1;
   }
   if (!disc) {
-    fprintf(stderr, "usage: foxhollow <path-to-disc.iso|rvz>\n(or set FOXHOLLOW_DISC)\n");
+    report("usage: foxhollow <path-to-disc.iso|rvz>\n(or set FOXHOLLOW_DISC)\n");
     return 1;
   }
 
@@ -147,7 +176,7 @@ int main(int argc, char* argv[]) {
   VISetFrameBufferScale(fhConfigRenderScale());
 
   if (!aurora_dvd_open(disc)) {
-    fprintf(stderr, "foxhollow: failed to open disc image: %s\n", disc);
+    report("foxhollow: failed to open disc image: %s\n", disc);
     aurora_shutdown();
     return 1;
   }
@@ -155,13 +184,13 @@ int main(int argc, char* argv[]) {
   mapping = disc_mapping(DVDGetCurrentDiskID());
   if (mapping == NULL) {
     const DVDDiskID* id = DVDGetCurrentDiskID();
-    fprintf(stderr, "foxhollow: unsupported disc %.4s%.2s revision %u, disc %u\n", id->gameName, id->company,
+    report("foxhollow: unsupported disc %.4s%.2s revision %u, disc %u\n", id->gameName, id->company,
             id->gameVersion, id->diskNumber);
     aurora_dvd_close();
     aurora_shutdown();
     return 1;
   }
-  fprintf(stdout, "foxhollow: using %s disc with the GSAE01 asset mapping and USA 1.%d code\n", mapping->label,
+  report("foxhollow: using %s disc with the GSAE01 asset mapping and USA 1.%d code\n", mapping->label,
           revision);
 
   fhModsInit(argc, argv, info.userPath);

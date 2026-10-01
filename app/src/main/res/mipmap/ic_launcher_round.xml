@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ic_launcher_round.xml - Icono vectorial redondeado -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF6200EE"
+        android:pathData="M54,0C83.8,0 108,24.2 108,54C108,83.8 83.8,108 54,108C24.2,108 0,83.8 0,54C0,24.2 24.2,0 54,0z" />
+    <path
+        android:fillColor="#FF03DAC5"
+        android:pathData="M54,26L78,50L54,74L30,50z" />
+</vector>

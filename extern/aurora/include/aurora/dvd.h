@@ -20,8 +20,6 @@ bool aurora_dvd_open(const char* disc_path);
  */
 void aurora_dvd_close(void);
 
-void aurora_dvd_process_callbacks(void);
-
 /**
  * OVERLAY FILES!
  *
@@ -123,6 +121,16 @@ void aurora_dvd_overlay_files(const AuroraOverlayFile* files, size_t nFiles, s32
  * This does not take overlay files into account.
  */
 s32 aurora_dvd_base_entry_count();
+
+/**
+ * \brief Lets pending DVD work make progress.
+ *
+ * GameCube code masks interrupts around short critical sections and expects disc I/O to keep
+ * flowing regardless. Aurora already completes DVD commands on a worker thread, so this only
+ * yields to that thread. It is safe to call from any thread and does nothing when no disc is
+ * open.
+ */
+void aurora_dvd_process_callbacks(void);
 
 #ifdef __cplusplus
 }
