@@ -4,12 +4,28 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (default: build-<run number>)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the release as a prerelease'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    
+    timeout-minutes: 60
+
+    env:
+      NDK_VERSION: '27.2.12479018'
+      CMAKE_VERSION: '3.31.6'
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,7 +36,42 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK, NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}"
+
+      - name: Write local.properties
+        run: |
+          printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > local.properties
+          printf 'ndk.dir=%s/ndk/%s\n' "$ANDROID_SDK_ROOT" "$NDK_VERSION" >> local.properties
+          cat local.properties
+
+      # nod is built from source through Corrosion, so Rust is a hard build requirement.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Point Rust at the NDK toolchain
+        run: |
+          tc="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${tc}/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=${tc}/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${tc}/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${tc}/llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=${tc}/llvm-ranlib" >> "$GITHUB_ENV"
+          test -x "${tc}/aarch64-linux-android24-clang"
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -28,45 +79,83 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle*', 'local.properties') }}
-          restore-keys: |
-            gradle-
+          key: gradle-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: gradle-
 
-      - name: Setup Android SDK and NDK
-        uses: nttld/setup-android-ndk@v1
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
-          ndk-version: 26.1.10909125
-          cmake-version: 3.22.1
-          api-level: 34
-          cache: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ hashFiles('extern/aurora/cmake/AuroraDependencyVersions.cmake') }}
+          restore-keys: cargo-
 
-      - name: Verify NDK
-        run: |
-          echo "ANDROID_NDK=$ANDROID_NDK"
-          ls "$ANDROID_NDK/build/cmake/"
-
-      - name: Build Debug APK
+      - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug \
-            -Pandroid.defaultConfig.ndk.abiFilters=arm64-v8a \
-            --no-daemon \
-            --stacktrace \
-            -Dorg.gradle.daemon=false
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Find APK
-        id: find-apk
+      - name: Locate APK
+        id: apk
         run: |
-          APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "No APK found"
-            exit 1
-          fi
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          apk="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
+          if [ -z "$apk" ]; then echo "No APK found"; exit 1; fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          cp "$apk" "$RUNNER_TEMP/foxhollow-android-${{ github.run_number }}.apk"
+          ls -la "$RUNNER_TEMP"/*.apk
 
-      - name: Upload APK
+      - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Foxhollow-debug-apk
-          path: ${{ steps.find-apk.outputs.apk_path }}
-          retention-days: 30
+          name: foxhollow-debug-apk
+          path: ${{ steps.apk.outputs.path }}
+
+      - name: Write release notes
+        run: |
+          {
+            echo "Automated build from commit \`${GITHUB_SHA}\`."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow run | ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_NUMBER} |"
+            echo "| Commit | ${GITHUB_SHA} |"
+            echo "| ABI | arm64-v8a |"
+            echo "| Min SDK | 24 (Android 7.0) |"
+            echo
+            echo "This is a **debug-signed test build**. No game data is included; the disc"
+            echo "must be supplied separately by the user."
+            echo
+            echo "## Install"
+            echo
+            echo "Stock Android: enable \"install from unknown sources\" and open the APK."
+            echo
+            echo "On MIUI/HyperOS, sideloading from the file manager is blocked. Use ADB:"
+            echo
+            echo '```'
+            echo "adb push foxhollow-android-debug.apk /data/local/tmp/fh.apk"
+            echo "adb shell pm install -r /data/local/tmp/fh.apk"
+            echo '```'
+            echo
+            echo "## Known limitations"
+            echo
+            echo "- Game response to touch input and audible output are not yet confirmed on hardware."
+            echo "- Display mode changes may occasionally drop the render surface."
+            echo "- HD texture mods are not bundled."
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || format('build-{0}', github.run_number) }}
+          PRERELEASE: ${{ inputs.prerelease == '' && 'true' || inputs.prerelease }}
+        run: |
+          prerelease_flag=""
+          if [ "${PRERELEASE}" = "true" ]; then prerelease_flag="--prerelease"; fi
+          gh release create "${TAG}" \
+            "$RUNNER_TEMP/foxhollow-android-${{ github.run_number }}.apk#foxhollow-android-debug.apk" \
+            --title "Foxhollow Android build ${GITHUB_RUN_NUMBER}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --target "${GITHUB_SHA}" \
+            $prerelease_flag

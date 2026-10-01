@@ -11,7 +11,11 @@ def fhNdkVersion = "27.2.12479018"
 // Rust host toolchain. nod (the DVD/filesystem backend) is built from source through Corrosion,
 // and the default toolchain on this machine has no linker for host build scripts, so the GNU
 // toolchain is selected explicitly and its bundled dlltool is put on PATH by the caller.
-def rustToolchain = "${System.getProperty('user.home')}/.rustup/toolchains/stable-x86_64-pc-windows-gnu/bin"
+// The triple and the executable suffix are host-specific so CI on Linux resolves the toolchain too.
+def fhHostIsWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+def fhRustTriple = fhHostIsWindows ? 'stable-x86_64-pc-windows-gnu' : 'stable-x86_64-unknown-linux-gnu'
+def fhRustExe = fhHostIsWindows ? '.exe' : ''
+def rustToolchain = "${System.getProperty('user.home')}/.rustup/toolchains/${fhRustTriple}/bin"
 
 android {
     namespace 'dev.encounter.foxhollow'
@@ -43,9 +47,9 @@ android {
                           '-DFOXHOLLOW_STATIC_JPEG=ON',
                           "-DJPEG_INCLUDE_DIR=${rootDir}/third_party/jpeg-turbo-arm64/include",
                           "-DJPEG_LIBRARY=${rootDir}/third_party/jpeg-turbo-arm64/lib/libjpeg.a",
-                          "-DRust_COMPILER=${rustToolchain}/rustc.exe",
-                          "-DRust_CARGO=${rustToolchain}/cargo.exe",
-                          "-DCORROSION_CARGO=${rustToolchain}/cargo.exe"
+"-DRust_COMPILER=${rustToolchain}/rustc${fhRustExe}",
+                            "-DRust_CARGO=${rustToolchain}/cargo${fhRustExe}",
+                            "-DCORROSION_CARGO=${rustToolchain}/cargo${fhRustExe}"
                 cFlags '-O2'
                 cppFlags '-O2', '-std=c++20'
                 targets 'foxhollow'
