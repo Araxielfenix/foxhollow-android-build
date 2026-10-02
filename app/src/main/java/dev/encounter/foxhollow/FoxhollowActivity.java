@@ -500,6 +500,12 @@ public class FoxhollowActivity extends SDLActivity {
             requestManageStoragePermission();
         }
 
+        // Re-apply display mode and render scale in case the native side reset them
+        if (touchSettings != null) {
+            nativeSetDisplayMode(touchSettings.displayMode);
+            nativeSetRenderScale(touchSettings.renderScale);
+        }
+
         // Set pending game path if available
         if (pendingGamePath != null) {
             nativeSetGamePath(pendingGamePath);

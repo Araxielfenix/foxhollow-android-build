@@ -129,6 +129,11 @@ public class TouchControlSettings {
         save();
     }
 
+    /** Recarga los valores desde disco; útil si el proceso murió y revivió. */
+    public void reload() {
+        load();
+    }
+
     private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
     }
