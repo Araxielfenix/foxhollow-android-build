@@ -321,6 +321,14 @@ public class FoxhollowActivity extends SDLActivity {
     private void handleIntent(Intent intent) {
         if (intent == null) return;
         
+        // Handle mod path extra (passed via --es mod_path)
+        String modPath = intent.getStringExtra("mod_path");
+        Log.d(TAG, "handleIntent: mod_path=" + modPath);
+        if (modPath != null && !modPath.isEmpty()) {
+            Log.d(TAG, "handleIntent: calling nativeInitMods with " + modPath);
+            nativeInitMods(modPath);
+        }
+        
         String action = intent.getAction();
         Uri data = intent.getData();
         

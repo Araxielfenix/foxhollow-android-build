@@ -337,16 +337,20 @@ JNIEXPORT jfloat JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeGe
  * The path should point to a directory containing mod.json manifests.
  */
 JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeInitMods(JNIEnv* env,
-                                                                                     jclass, jstring path) {
+                                                                                   jclass, jstring path) {
+  SDL_Log("foxhollow: nativeInitMods called");
   if (path == nullptr) {
+    SDL_Log("foxhollow: nativeInitMods: path is null, calling fhModsInit(0, nullptr, nullptr)");
     fhModsInit(0, nullptr, nullptr);
     return;
   }
   const char* chars = env->GetStringUTFChars(path, nullptr);
   if (chars != nullptr) {
+    SDL_Log("foxhollow: nativeInitMods: path='%s'", chars);
     char* argv[] = { const_cast<char*>("foxhollow"), const_cast<char*>(chars) };
     fhModsInit(2, argv, nullptr);
     env->ReleaseStringUTFChars(path, chars);
+    SDL_Log("foxhollow: nativeInitMods: fhModsInit returned");
   }
 }
 
