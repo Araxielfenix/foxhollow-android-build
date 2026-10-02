@@ -26,8 +26,11 @@
 #include <SDL3/SDL_stdinc.h>
 #include <SDL3/SDL_system.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 
 extern "C" int aurora_main(int argc, char** argv);
 
@@ -37,6 +40,17 @@ namespace {
 
 char sGamePath[FH_MAX_PATH] = {};
 bool sGamePathSet = false;
+std::mutex sGamePathMutex;
+std::condition_variable sGamePathCond;
+
+/**
+ * Guards sGamePath / sGamePathSet. resolve_disc() runs on SDL's own thread while
+ * nativeSetGamePath() is called from the Java UI thread, so the pair is shared state.
+ */
+bool game_path_is_set() {
+  std::lock_guard<std::mutex> lock(sGamePathMutex);
+  return sGamePathSet;
+}
 
 void set_env(const char* name, const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -56,7 +70,7 @@ void set_env(const char* name, const char* value) {
 void resolve_disc() {
   const char* external = SDL_GetAndroidExternalStoragePath();
 
-  if (sGamePathSet && sGamePath[0] != '\0') {
+  if (game_path_is_set()) {
     set_env("FOXHOLLOW_DISC", sGamePath);
     return;
   }
@@ -72,7 +86,21 @@ void resolve_disc() {
     }
   }
 
-  SDL_Log("foxhollow: no disc image set; pass one through nativeSetGamePath");
+  // Nothing on disk and nothing chosen yet. The Java layer prompts the user for the disc, so
+  // block here rather than letting aurora_main fall through to its usage message and return:
+  // that unwinds SDL_main, which tears the whole activity down within a second and leaves the
+  // user with no way to retry.
+  SDL_Log("foxhollow: no disc image yet, waiting for one to be selected");
+  {
+    std::unique_lock<std::mutex> lock(sGamePathMutex);
+    while (!sGamePathSet) {
+      sGamePathCond.wait_for(lock, std::chrono::seconds(15));
+      if (!sGamePathSet) {
+        SDL_Log("foxhollow: still waiting for a disc image");
+      }
+    }
+  }
+  set_env("FOXHOLLOW_DISC", sGamePath);
 }
 
 /**
@@ -131,10 +159,15 @@ JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeInit
 }
 
 JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeSetGamePath(JNIEnv* env, jclass,
-                                                                                       jstring path) {
+                                                                                        jstring path) {
   if (path == nullptr) {
-    sGamePathSet = false;
-    sGamePath[0] = '\0';
+    {
+      std::lock_guard<std::mutex> lock(sGamePathMutex);
+      sGamePathSet = false;
+      sGamePath[0] = '\0';
+    }
+    // Wakes resolve_disc(), which is what lets the game start at all on a fresh install.
+    sGamePathCond.notify_all();
     return;
   }
 
@@ -143,13 +176,19 @@ JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeSetG
     return;
   }
 
-  SDL_strlcpy(sGamePath, chars, sizeof(sGamePath));
-  sGamePathSet = true;
+  {
+    std::lock_guard<std::mutex> lock(sGamePathMutex);
+    SDL_strlcpy(sGamePath, chars, sizeof(sGamePath));
+    sGamePathSet = sGamePath[0] != '\0';
+  }
+  sGamePathCond.notify_all();
 
   env->ReleaseStringUTFChars(path, chars);
 
-  SDL_Log("foxhollow: disc image set to %s", sGamePath);
-  set_env("FOXHOLLOW_DISC", sGamePath);
+  if (game_path_is_set()) {
+    SDL_Log("foxhollow: disc image set to %s", sGamePath);
+    set_env("FOXHOLLOW_DISC", sGamePath);
+  }
 }
 
 JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeFolderDialogResult(JNIEnv*, jclass, jlong,

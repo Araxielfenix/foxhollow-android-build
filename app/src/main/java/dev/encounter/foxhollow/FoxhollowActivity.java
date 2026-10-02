@@ -1,5 +1,7 @@
 package dev.encounter.foxhollow;
 
+import android.content.SharedPreferences;
+import android.os.ParcelFileDescriptor;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
@@ -33,6 +35,9 @@ import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,12 +50,25 @@ public class FoxhollowActivity extends SDLActivity {
     private static final float DEFAULT_SURFACE_FRAME_RATE = 60.0f;
     private static final int FOLDER_DIALOG_REQUEST_CODE = 0x4253;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 0x4254;
+    private static final int DISC_PICK_REQUEST_CODE = 0x4255;
+    private static final String DISC_PREFS = "foxhollow_disc";
+    private static final String KEY_DISC_URI = "disc_uri";
     private static final String EXTERNAL_STORAGE_AUTHORITY =
             "com.android.externalstorage.documents";
 
     private long folderDialogUserdata = 0;
     private boolean awaitingManageStoragePermission = false;
     private String pendingGamePath = null;
+
+    /**
+     * Handle onto the selected disc image. Scoped storage stops the game from opening an
+     * arbitrary /sdcard path, so the file is read through a descriptor granted by the document
+     * provider instead. It has to stay open for as long as the game runs, otherwise
+     * /proc/self/fd/<n> stops resolving.
+     */
+    private ParcelFileDescriptor discDescriptor = null;
+    private boolean discPromptShown = false;
+    private boolean discChosen = false;
 
     // Native methods (implemented in C++ via CMake)
     private static native void nativeFolderDialogResult(long userdata, String path, String error);
@@ -121,6 +139,13 @@ public class FoxhollowActivity extends SDLActivity {
 
         // Handle intent for opening game files
         handleIntent(getIntent());
+
+        // No disc image ships with the app, so the first launch has to ask where it is. Setting
+        // it here, before SDL's thread starts the game, means resolve_disc() finds it immediately
+        // instead of blocking.
+        if (!applyStoredDisc()) {
+            promptForDisc();
+        }
     }
 
     /**
@@ -291,6 +316,7 @@ public class FoxhollowActivity extends SDLActivity {
             // Handle game file/folder opening
             String path = getPathFromUri(data);
             if (path != null) {
+                discChosen = true;
                 pendingGamePath = path;
                 // If native is ready, set immediately
                 if (isNativeReady()) {
@@ -341,6 +367,112 @@ public class FoxhollowActivity extends SDLActivity {
         }
         
         return null;
+    }
+
+    private SharedPreferences discPrefs() {
+        return getSharedPreferences(DISC_PREFS, MODE_PRIVATE);
+    }
+
+    /**
+     * Applies the disc chosen on a previous run, when there is one and it is still readable.
+     *
+     * Returns true when the native layer got a usable path, in which case the user is not asked
+     * again.
+     */
+    private boolean applyStoredDisc() {
+        String stored = discPrefs().getString(KEY_DISC_URI, null);
+        if (stored == null || stored.isEmpty()) {
+            return false;
+        }
+        return applyDiscUri(Uri.parse(stored), false);
+    }
+
+    /**
+     * Opens the system file picker so the user can point at their disc image.
+     *
+     * The game cannot run without one and none is bundled, so this runs by itself on a fresh
+     * install rather than leaving the user in front of a black screen with no explanation.
+     */
+    private void promptForDisc() {
+        if (discPromptShown) {
+            return;
+        }
+        discPromptShown = true;
+
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        // Disc images have no registered MIME type, and providers are free to report anything.
+        intent.setType("*/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            Log.i(TAG, "foxhollow: no disc image chosen yet, asking the user for one");
+            startActivityForResult(intent, DISC_PICK_REQUEST_CODE);
+        } catch (ActivityNotFoundException e) {
+            Log.e(TAG, "No file picker available to choose a disc image", e);
+        }
+    }
+
+    /**
+     * Turns a picked document into a path the native layer can open, and remembers it.
+     *
+     * The game expects the disc at <external-files>/Star Fox Adventures.iso, so we copy the
+     * selected file there. This works under scoped storage and makes subsequent launches
+     * instant because resolve_disc() finds it automatically.
+     */
+    private boolean applyDiscUri(Uri uri, boolean remember) {
+        if (uri == null) {
+            return false;
+        }
+
+        if (remember) {
+            try {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException e) {
+                Log.w(TAG, "Could not persist read access to " + uri, e);
+            }
+            discPrefs().edit().putString(KEY_DISC_URI, uri.toString()).apply();
+        }
+
+        String direct = getPathFromUri(uri);
+        if (direct != null && !direct.startsWith("content:") && new File(direct).canRead()) {
+            Log.i(TAG, "foxhollow: disc image at " + direct);
+            discChosen = true;
+            nativeSetGamePath(direct);
+            return true;
+        }
+
+        // Fallback: copy to the app's external files dir as the canonical name the native
+        // code expects. This avoids FD issues and makes subsequent launches instant.
+        try {
+            File extDir = getExternalFilesDir(null);
+            if (extDir == null) {
+                Log.w(TAG, "External files directory not available");
+                return false;
+            }
+            File target = new File(extDir, "Star Fox Adventures.iso");
+            try (InputStream in = getContentResolver().openInputStream(uri);
+                 FileOutputStream out = new FileOutputStream(target)) {
+                if (in == null) {
+                    Log.w(TAG, "Provider returned no input stream for " + uri);
+                    return false;
+                }
+                byte[] buffer = new byte[1024 * 1024];
+                int read;
+                long total = 0;
+                while ((read = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                    total += read;
+                }
+                Log.i(TAG, "foxhollow: copied disc image to " + target + " (" + total + " bytes)");
+                discChosen = true;
+                nativeSetGamePath(target.getAbsolutePath());
+                return true;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Could not copy the selected disc image " + uri, e);
+            return false;
+        }
     }
 
     private boolean isNativeReady() {
@@ -395,7 +527,16 @@ public class FoxhollowActivity extends SDLActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Cleanup native resources if needed
+        // The game reads the disc through this descriptor, so it must outlive every callback but
+        // not the activity.
+        if (discDescriptor != null) {
+            try {
+                discDescriptor.close();
+            } catch (Exception e) {
+                Log.w(TAG, "Could not close the disc descriptor", e);
+            }
+            discDescriptor = null;
+        }
     }
 
     @Override
@@ -415,7 +556,19 @@ public class FoxhollowActivity extends SDLActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        
+
+        if (requestCode == DISC_PICK_REQUEST_CODE) {
+            Uri picked = (resultCode == Activity.RESULT_OK && data != null) ? data.getData() : null;
+            if (picked != null && applyDiscUri(picked, true)) {
+                Log.i(TAG, "foxhollow: disc image selected, starting the game");
+            } else {
+                // The native side stays blocked waiting, so the app simply idles rather than
+                // closing. Relaunching asks again.
+                Log.w(TAG, "foxhollow: no disc image chosen, the game stays idle until one is");
+            }
+            return;
+        }
+
         if (requestCode == FOLDER_DIALOG_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 Uri treeUri = data.getData();
