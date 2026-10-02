@@ -26,8 +26,8 @@ static u32 sStreamTrigger;
 static u32 sMuted = 0;
 static u32 sMuteKeyWasDown;
 #endif
-static SDL_AudioStream* sOutputStream;
 static SDL_AudioStream* sStreamOutput;
+SDL_AudioStream* sOutputStream;
 static u8* sStreamData;
 static u32 sStreamDataLength;
 static u32 sStreamDataOffset;

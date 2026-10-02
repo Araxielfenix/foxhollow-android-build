@@ -109,6 +109,8 @@ public class SettingsMenuView extends View {
     private Row renderScaleRow;
     private Row showFpsRow;
     private Row displayModeRow;
+    private Row vSyncRow;
+    private Row volumeRow;
 
     private float rowHeight;
     private float headerHeight;
@@ -198,10 +200,16 @@ public class SettingsMenuView extends View {
         renderScaleRow = Row.slider("RENDER SCALE", TouchControlSettings.RENDER_SCALE_MIN,
                 TouchControlSettings.RENDER_SCALE_MAX, false, new float[] { settings.renderScale }, "x");
         showFpsRow = Row.toggle("FPS COUNTER", new boolean[] { settings.showFps });
+        vSyncRow = Row.toggle("V-SYNC", new boolean[] { settings.vSync });
 
         rows.add(displayModeRow);
         rows.add(renderScaleRow);
         rows.add(showFpsRow);
+        rows.add(vSyncRow);
+
+        rows.add(Row.header("AUDIO"));
+        volumeRow = Row.slider("VOLUME", 0.0f, 1.0f, false, new float[] { settings.volume }, "");
+        rows.add(volumeRow);
 
         rows.add(Row.button("RESET TO DEFAULTS", new Runnable() {
             @Override
@@ -390,6 +398,8 @@ public class SettingsMenuView extends View {
         settings.renderScale = renderScaleRow.number[0];
         settings.showFps = showFpsRow.flag[0];
         settings.displayMode = displayModeRow.choiceIndex[0];
+        settings.vSync = vSyncRow.flag[0];
+        settings.volume = volumeRow.number[0];
         settings.save();
 
         controls.applySettings(settings);

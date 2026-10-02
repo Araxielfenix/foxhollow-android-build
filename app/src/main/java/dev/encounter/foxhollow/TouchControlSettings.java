@@ -25,6 +25,8 @@ public class TouchControlSettings {
     private static final String KEY_MINI = "mini";
     private static final String KEY_RENDER_SCALE = "render_scale";
     private static final String KEY_SHOW_FPS = "show_fps";
+    private static final String KEY_VSYNC = "vsync";
+    private static final String KEY_VOLUME = "volume";
     private static final String KEY_DISPLAY_MODE = "display_mode";
 
     /** Original GameCube framing: 4:3 with bars down the sides. */
@@ -71,6 +73,12 @@ public class TouchControlSettings {
     /** Fraction of the display the game renders into; below 1 trades sharpness for frames. */
     public float renderScale = 1.0f;
 
+    /** Synchronize frame rate with display refresh (VSync). */
+    public boolean vSync = true;
+
+    /** Master audio volume, 0.0 to 1.0. */
+    public float volume = 1.0f;
+
     /** Show the frames-per-second counter over the game. */
     public boolean showFps = false;
 
@@ -95,6 +103,8 @@ public class TouchControlSettings {
         mini = prefs.getBoolean(KEY_MINI, mini);
         renderScale = clamp(prefs.getFloat(KEY_RENDER_SCALE, renderScale), RENDER_SCALE_MIN, RENDER_SCALE_MAX);
         showFps = prefs.getBoolean(KEY_SHOW_FPS, showFps);
+        vSync = prefs.getBoolean(KEY_VSYNC, vSync);
+        volume = clamp(prefs.getFloat(KEY_VOLUME, volume), 0.0f, 1.0f);
         displayMode = Math.max(0, Math.min(2, prefs.getInt(KEY_DISPLAY_MODE, displayMode)));
     }
 
@@ -110,6 +120,8 @@ public class TouchControlSettings {
                 .putBoolean(KEY_MINI, mini)
                 .putFloat(KEY_RENDER_SCALE, renderScale)
                 .putBoolean(KEY_SHOW_FPS, showFps)
+                .putBoolean(KEY_VSYNC, vSync)
+                .putFloat(KEY_VOLUME, volume)
                 .putInt(KEY_DISPLAY_MODE, displayMode)
                 .apply();
     }
@@ -125,6 +137,8 @@ public class TouchControlSettings {
         mini = false;
         renderScale = 1.0f;
         showFps = false;
+        vSync = true;
+        volume = 1.0f;
         displayMode = DISPLAY_FULL;
         save();
     }

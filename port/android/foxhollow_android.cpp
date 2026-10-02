@@ -17,8 +17,16 @@
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/pad.h>
 #include <dolphin/vi.h>
+#include <dolphin/dtk.h>
 
 #include <aurora/gfx.h>
+#include <aurora/aurora.h>
+
+#include <foxhollow_audio.h>
+
+#include <foxhollow_mods.h>
+#include <aurora/webgpu.hpp>
+#include <foxhollow_audio.h>
 
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
@@ -31,6 +39,27 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+
+/**
+ * Sets the master audio volume for the main output stream (0.0 to 1.0).
+ */
+static void aiSetVolume(float volume) {
+  if (volume < 0.0f) volume = 0.0f;
+  if (volume > 1.0f) volume = 1.0f;
+  if (sOutputStream != NULL) {
+    SDL_SetAudioStreamGain(sOutputStream, volume);
+  }
+}
+
+/**
+ * Returns the current master audio volume (0.0 to 1.0).
+ */
+static float aiGetVolume(void) {
+  if (sOutputStream != NULL) {
+    return SDL_GetAudioStreamGain(sOutputStream);
+  }
+  return 1.0f;
+}
 
 extern "C" int aurora_main(int argc, char** argv);
 
@@ -269,6 +298,70 @@ JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeSetD
     AuroraSetDisplayAspect(4.0f / 3.0f);
     break;
   }
+}
+
+/**
+ * Enables or disables VSync. Takes effect on the next frame.
+ */
+JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeSetVSync(JNIEnv*, jclass,
+                                                                                   jboolean enabled) {
+  aurora_enable_vsync(enabled);
+}
+
+/**
+ * Returns the current VSync state.
+ */
+JNIEXPORT jboolean JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeGetVSync(JNIEnv*, jclass) {
+  return aurora::webgpu::vsync_enabled();
+}
+
+/**
+ * Sets the master audio volume (0.0 to 1.0).
+ */
+JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeSetVolume(JNIEnv*, jclass,
+                                                                                    jfloat volume) {
+  if (volume < 0.0f) volume = 0.0f;
+  if (volume > 1.0f) volume = 1.0f;
+  aiSetVolume(volume);
+}
+
+/**
+ * Returns the current master audio volume (0.0 to 1.0).
+ */
+JNIEXPORT jfloat JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeGetVolume(JNIEnv*, jclass) {
+  return aiGetVolume();
+}
+
+/**
+ * Initializes the mod system with a custom mods directory.
+ * The path should point to a directory containing mod.json manifests.
+ */
+JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeInitMods(JNIEnv* env,
+                                                                                     jclass, jstring path) {
+  if (path == nullptr) {
+    fhModsInit(0, nullptr, nullptr);
+    return;
+  }
+  const char* chars = env->GetStringUTFChars(path, nullptr);
+  if (chars != nullptr) {
+    char* argv[] = { const_cast<char*>("foxhollow"), const_cast<char*>(chars) };
+    fhModsInit(2, argv, nullptr);
+    env->ReleaseStringUTFChars(path, chars);
+  }
+}
+
+/**
+ * Updates the mod system (called each frame).
+ */
+JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeUpdateMods(JNIEnv*, jclass) {
+  fhModsUpdate();
+}
+
+/**
+ * Shuts down the mod system.
+ */
+JNIEXPORT void JNICALL Java_dev_encounter_foxhollow_FoxhollowActivity_nativeShutdownMods(JNIEnv*, jclass) {
+  fhModsShutdown();
 }
 
 } // extern "C"

@@ -93,6 +93,14 @@ public class FoxhollowActivity extends SDLActivity {
     /** 0 = 4:3, 1 = 16:9, 2 = stretched to the display. */
     private static native void nativeSetDisplayMode(int mode);
 
+    private static native void nativeSetVSync(boolean enabled);
+    private static native boolean nativeGetVSync();
+    private static native void nativeSetVolume(float volume);
+    private static native float nativeGetVolume();
+    private static native void nativeInitMods(String path);
+    private static native void nativeUpdateMods();
+    private static native void nativeShutdownMods();
+
     private TouchControlsView touchControls;
     private SettingsMenuView settingsMenu;
     private FpsOverlayView fpsOverlay;
@@ -197,6 +205,8 @@ public class FoxhollowActivity extends SDLActivity {
         // be pushed in afterwards for it to take effect on this launch.
         nativeSetRenderScale(touchSettings.renderScale);
         nativeSetDisplayMode(touchSettings.displayMode);
+        nativeSetVSync(touchSettings.vSync);
+        nativeSetVolume(touchSettings.volume);
     }
 
     private static ViewGroup.LayoutParams matchParent() {
@@ -207,6 +217,8 @@ public class FoxhollowActivity extends SDLActivity {
     private void applySettings(TouchControlSettings settings) {
         nativeSetRenderScale(settings.renderScale);
         nativeSetDisplayMode(settings.displayMode);
+        nativeSetVSync(settings.vSync);
+        nativeSetVolume(settings.volume);
         if (fpsOverlay != null) {
             fpsOverlay.setVisibility(settings.showFps ? View.VISIBLE : View.GONE);
         }
@@ -489,21 +501,20 @@ public class FoxhollowActivity extends SDLActivity {
 
     @Override
     protected void onResume() {
-        super.onResume();
-        hideSystemBars();
-
-        // SDLActivity hands the view back without clearing touches, so anything held when the
-        // app went away would still be down on return.
-        releaseControls();
-
-        if (awaitingManageStoragePermission) {
-            requestManageStoragePermission();
-        }
-
-        // Re-apply display mode and render scale in case the native side reset them
+        // Apply display mode, VSync, render scale and volume BEFORE super.onResume() starts the SDL thread.
+        // Otherwise the native side initializes with defaults before we can set them.
         if (touchSettings != null) {
             nativeSetDisplayMode(touchSettings.displayMode);
             nativeSetRenderScale(touchSettings.renderScale);
+            nativeSetVSync(touchSettings.vSync);
+            nativeSetVolume(touchSettings.volume);
+        }
+
+        super.onResume();
+        hideSystemBars();
+
+        if (awaitingManageStoragePermission) {
+            requestManageStoragePermission();
         }
 
         // Set pending game path if available
