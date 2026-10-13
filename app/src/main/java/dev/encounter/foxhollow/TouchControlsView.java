@@ -42,6 +42,13 @@ public class TouchControlsView extends View {
     private static final float MINI_SCALE = 0.62f;
     private static final int MINI_ALPHA = 96;
 
+    /** GameCube face-button colours: A green, B red, X yellow, Y blue. */
+    private static final int COLOR_A = 0xFF00FF00;
+    private static final int COLOR_B = 0xFFFF0000;
+    private static final int COLOR_X = 0xFFFFFF00;
+    private static final int COLOR_Y = 0xFF0000FF;
+    private static final int COLOR_SHOULDER = 0xFFFFFFFF;
+
     /** Notified when the player swipes in from a screen edge, so the activity can show the menu. */
     public interface OnMenuGestureListener {
         void onMenuGesture();
@@ -57,13 +64,19 @@ public class TouchControlsView extends View {
         final float cx;
         final float cy;
         final float radius;
+        final int color;
 
         Control(String label, int button, float cx, float cy, float radius) {
+            this(label, button, cx, cy, radius, COLOR_SHOULDER);
+        }
+
+        Control(String label, int button, float cx, float cy, float radius, int color) {
             this.label = label;
             this.button = button;
             this.cx = cx;
             this.cy = cy;
             this.radius = radius;
+            this.color = color;
         }
     }
 
@@ -129,9 +142,11 @@ public class TouchControlsView extends View {
     /**
      * Positions the controls from the current view size.
      *
-     * With stretch on (the default) each cluster is anchored to the screen edges, so the controls
-     * reach the corners the thumbs naturally rest on instead of floating in the middle. Turning
-     * it off keeps the earlier inset layout, which leaves more of the picture visible.
+     * Layout follows the real GameCube pad: the C-stick zone floats on the left, the XYAB diamond
+     * sits on the right, and the Z/L/R/Start shoulder row runs across the top. With stretch on
+     * (the default) each cluster is anchored to the screen edges so the controls reach the corners
+     * the thumbs naturally rest on instead of floating in the middle. Turning it off keeps the
+     * earlier inset layout, which leaves more of the picture visible.
      */
     private void layoutControls() {
         float w = getWidth();
@@ -187,14 +202,14 @@ public class TouchControlsView extends View {
         }
 
         controls = new Control[] {
-            new Control("Y", BTN_Y, diamondX, diamondY - gap, buttonRadius),
-            new Control("X", BTN_X, diamondX - gap, diamondY, buttonRadius),
-            new Control("A", BTN_A, diamondX + gap, diamondY, buttonRadius),
-            new Control("B", BTN_B, diamondX, diamondY + gap, buttonRadius),
-            new Control("Z", BTN_Z, zX, zY, shoulderRadius),
-            new Control("START", BTN_START, startX, startY, shoulderRadius * 1.35f),
-            new Control("L", BTN_L, lX, shoulderRadius, shoulderRadius),
-            new Control("R", BTN_R, rX, shoulderRadius, shoulderRadius),
+            new Control("Y", BTN_Y, diamondX, diamondY - gap, buttonRadius, COLOR_Y),
+            new Control("X", BTN_X, diamondX - gap, diamondY, buttonRadius, COLOR_X),
+            new Control("A", BTN_A, diamondX + gap, diamondY, buttonRadius, COLOR_A),
+            new Control("B", BTN_B, diamondX, diamondY + gap, buttonRadius, COLOR_B),
+            new Control("Z", BTN_Z, zX, zY, shoulderRadius, COLOR_SHOULDER),
+            new Control("START", BTN_START, startX, startY, shoulderRadius * 1.35f, COLOR_SHOULDER),
+            new Control("L", BTN_L, lX, shoulderRadius, shoulderRadius, COLOR_SHOULDER),
+            new Control("R", BTN_R, rX, shoulderRadius, shoulderRadius, COLOR_SHOULDER),
         };
 
         // The stick floats: its origin is wherever the finger lands inside the left zone.
@@ -443,20 +458,21 @@ public class TouchControlsView extends View {
             canvas.drawCircle(knobX, knobY, stickRadius * 0.42f, knobPaint);
         }
 
-        for (Control c : controls) {
+for (Control c : controls) {
             boolean pressed = active.containsValue(c);
 
+            int base = c.color;
             fillPaint.setColor(pressed
-                    ? Color.argb(Math.min(255, alpha + 70), 255, 255, 255)
-                    : Color.argb(alpha / 2, 255, 255, 255));
+                    ? Color.argb(Math.min(255, alpha + 70), Color.red(base), Color.green(base), Color.blue(base))
+                    : Color.argb(alpha / 2, Color.red(base), Color.green(base), Color.blue(base)));
             canvas.drawCircle(c.cx, c.cy, c.radius, fillPaint);
 
-            ringPaint.setColor(Color.argb(alpha + 40, 255, 255, 255));
+            ringPaint.setColor(Color.argb(alpha + 40, Color.red(base), Color.green(base), Color.blue(base)));
             ringPaint.setStrokeWidth(mini ? 2f : 3f);
             canvas.drawCircle(c.cx, c.cy, c.radius, ringPaint);
 
-            textPaint.setColor(pressed ? Color.BLACK : Color.argb(alpha + 70, 255, 255, 255));
-            textPaint.setTextSize(c.radius * (c.label.length() > 1 ? 0.42f : 0.8f));
+            textPaint.setColor(pressed ? Color.argb(255, 0, 0, 0) : Color.argb(alpha + 70, 255, 255, 255));
+            textPaint textSize(c.radius * (c.label.length() > 1 ? 0.42f : 0.8f));
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float baseline = c.cy - (fm.ascent + fm.descent) / 2f;
             canvas.drawText(c.label, c.cx, baseline, textPaint);
