@@ -246,6 +246,8 @@ public class TouchControlsView extends View {
         cStickHomeY = 0f;
         cStickX = 0f;
         cStickY = 0f;
+        // Yellow/mustard color for C-stick to differentiate from main stick
+        final int COLOR_CSTICK = 0xFFE6B800; // Mustard yellow
     }
 
     private boolean insideStickZone(float x, float y) {
@@ -369,7 +371,10 @@ public class TouchControlsView extends View {
         // Right side, above the face button diamond area (where C-stick visually sits)
         float w = getWidth();
         float h = getHeight();
-        return x > w * 0.65f && y < h * 0.70f && y > h * 0.35f;
+        // C-stick is at cStickCenterX (diamondX) and cStickCenterY (diamondY - gap * 2.5f)
+        // diamondX is around w * 0.80, diamondY is around h * 0.62 (or anchored to edge)
+        // So C-stick is roughly at x ~ 0.80w, y ~ 0.35-0.45h
+        return x > w * 0.60f && y < h * 0.60f && y > h * 0.25f;
     }
 
     /**
@@ -592,18 +597,18 @@ public class TouchControlsView extends View {
         float drawCStickHomeX = cStickActive ? cStickHomeX : cStickCenterX;
         float drawCStickHomeY = cStickActive ? cStickHomeY : cStickCenterY;
         
-        // Always draw guide ring for C-stick
+        // Always draw guide ring for C-stick (mustard yellow)
         if (settings.stickRing) {
-            ringPaint.setColor(Color.argb(mini ? 100 : 160, 255, 255, 255));
+            ringPaint.setColor(Color.argb(mini ? 140 : 200, 0xE6, 0xB8, 0x00)); // Mustard yellow
             ringPaint.setStrokeWidth(mini ? 3f : 4f);
             canvas.drawCircle(drawCStickHomeX, drawCStickHomeY, cStickRadius, ringPaint);
         }
         
-        // Draw C-stick knob only when active
+        // Draw C-stick knob only when active (mustard yellow)
         if (cStickActive && cStickControl != null) {
             float knobX = cStickHomeX + cStickX * cStickRadius;
             float knobY = cStickHomeY + cStickY * cStickRadius;
-            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
+            knobPaint.setColor(Color.argb(stickAlpha, 0xE6, 0xB8, 0x00)); // Mustard yellow
             canvas.drawCircle(knobX, knobY, cStickRadius * 0.5f, knobPaint);
         }
     }
