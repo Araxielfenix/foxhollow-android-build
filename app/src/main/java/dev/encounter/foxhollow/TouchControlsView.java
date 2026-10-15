@@ -237,11 +237,11 @@ public class TouchControlsView extends View {
         stickX = 0f;
         stickY = 0f;
 
-        // C-stick (right analog stick): positioned ABOVE the face button diamond (like real GameCube)
+        // C-stick (right analog stick): positioned WELL ABOVE the face button diamond (extra separation)
         cStickControl = new Control("", 0, 0, 0, 0);
         cStickRadius = unit * 0.085f * scale; // Smaller than main stick
         cStickCenterX = diamondX;
-        cStickCenterY = diamondY - gap * 2.5f; // Above the diamond (GameCube layout)
+        cStickCenterY = diamondY - gap * 4.0f; // Well above the diamond (extra separation from face buttons)
         cStickHomeX = 0f;
         cStickHomeY = 0f;
         cStickX = 0f;
@@ -369,15 +369,16 @@ public class TouchControlsView extends View {
     }
 
 private boolean insideCStickZone(float x, float y) {
-        // C-stick visual position: cStickCenterX = diamondX, cStickCenterY = diamondY - gap * 2.5f
-        // Y button is at (diamondX, diamondY - gap) = 1.5*gap BELOW C-stick
+        // C-stick is visually at cStickCenterX, cStickCenterY (diamondX, diamondY - gap * 4.0f)
+        // Y button is at (diamondX, diamondY - gap) = 3.0*gap BELOW C-stick
         // gap = buttonRadius * 1.85f
-        // Distance C-stick to Y button = 1.5 * gap = 2.775 * buttonRadius
+        // Distance C-stick to Y button = 3.0 * gap = 5.55 * buttonRadius
         // Y button hit radius = 1.35 * buttonRadius
-        // Safe zone radius: 1.5 * cStickRadius = ~1.8 * buttonRadius (stops well before Y button)
+        // Huge margin: 5.55 - 1.35 = 4.2 * buttonRadius of separation
+        // Safe zone: 2.0 * cStickRadius = 2.4 * buttonRadius (well within separation)
         float dx = x - cStickCenterX;
         float dy = y - cStickCenterY;
-        float zoneRadius = cStickRadius * 1.5f; // Safe: doesn't reach face buttons
+        float zoneRadius = cStickRadius * 2.0f; // Generous but safe
         return (dx * dx + dy * dy) <= (zoneRadius * zoneRadius);
     }
 
