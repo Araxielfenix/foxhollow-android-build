@@ -368,12 +368,16 @@ public class TouchControlsView extends View {
         return null;
     }
 
-    private boolean insideCStickZone(float x, float y) {
-        // Use the actual visual position of the C-stick (cStickCenterX/Y)
-        // with a VERY generous radius so the user can easily touch it
+private boolean insideCStickZone(float x, float y) {
+        // C-stick visual position: cStickCenterX = diamondX, cStickCenterY = diamondY - gap * 2.5f
+        // Y button is at (diamondX, diamondY - gap) = 1.5*gap BELOW C-stick
+        // gap = buttonRadius * 1.85f
+        // Distance C-stick to Y button = 1.5 * gap = 2.775 * buttonRadius
+        // Y button hit radius = 1.35 * buttonRadius
+        // Safe zone radius: 1.5 * cStickRadius = ~1.8 * buttonRadius (stops well before Y button)
         float dx = x - cStickCenterX;
         float dy = y - cStickCenterY;
-        float zoneRadius = cStickRadius * 8f; // Very generous touch zone (8x visual size)
+        float zoneRadius = cStickRadius * 1.5f; // Safe: doesn't reach face buttons
         return (dx * dx + dy * dy) <= (zoneRadius * zoneRadius);
     }
 
