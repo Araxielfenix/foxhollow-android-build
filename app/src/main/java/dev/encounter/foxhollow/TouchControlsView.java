@@ -237,11 +237,11 @@ public class TouchControlsView extends View {
         stickX = 0f;
         stickY = 0f;
 
-        // C-stick (right analog stick): positioned below the face button diamond
+        // C-stick (right analog stick): positioned ABOVE the face button diamond (like real GameCube)
         cStickControl = new Control("", 0, 0, 0, 0);
         cStickRadius = unit * 0.085f * scale; // Smaller than main stick
         cStickCenterX = diamondX;
-        cStickCenterY = diamondY + gap * 1.8f; // Below the diamond
+        cStickCenterY = diamondY - gap * 2.5f; // Above the diamond (GameCube layout)
         cStickHomeX = 0f;
         cStickHomeY = 0f;
         cStickX = 0f;
@@ -366,10 +366,10 @@ public class TouchControlsView extends View {
     }
 
     private boolean insideCStickZone(float x, float y) {
-        // Right side, below the face button diamond area
+        // Right side, above the face button diamond area (where C-stick visually sits)
         float w = getWidth();
         float h = getHeight();
-        return x > w * 0.55f && y > h * 0.50f;
+        return x > w * 0.65f && y < h * 0.70f && y > h * 0.35f;
     }
 
     /**
@@ -544,32 +544,34 @@ public class TouchControlsView extends View {
         }
 
         int alpha = mini ? MINI_ALPHA : settings.alpha;
+        // Sticks use higher opacity for better visibility
+        int stickAlpha = Math.min(255, alpha + 60);
 
-        // Stick: a faint ring at the origin plus the deflected knob.
+        // Main stick: a faint ring at the origin plus the deflected knob.
         if (stickActive && stickControl != null) {
             if (settings.stickRing) {
-                ringPaint.setColor(Color.argb(mini ? 60 : 90, 255, 255, 255));
+                ringPaint.setColor(Color.argb(Math.min(255, stickAlpha / 2), 255, 255, 255));
                 ringPaint.setStrokeWidth(mini ? 2f : 3f);
                 canvas.drawCircle(stickHomeX, stickHomeY, stickRadius, ringPaint);
             }
 
             float knobX = stickHomeX + stickX * stickRadius;
             float knobY = stickHomeY + stickY * stickRadius;
-            knobPaint.setColor(Color.argb(alpha, 255, 255, 255));
+            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
             canvas.drawCircle(knobX, knobY, stickRadius * 0.42f, knobPaint);
         }
 
-        // C-stick: draw it below the face button diamond (floating like main stick)
+        // C-stick: draw it above the face button diamond (floating like main stick)
         if (cStickActive && cStickControl != null) {
             if (settings.stickRing) {
-                ringPaint.setColor(Color.argb(mini ? 60 : 90, 255, 255, 255));
+                ringPaint.setColor(Color.argb(Math.min(255, stickAlpha / 2), 255, 255, 255));
                 ringPaint.setStrokeWidth(mini ? 2f : 3f);
                 canvas.drawCircle(cStickHomeX, cStickHomeY, cStickRadius, ringPaint);
             }
 
             float knobX = cStickHomeX + cStickX * cStickRadius;
             float knobY = cStickHomeY + cStickY * cStickRadius;
-            knobPaint.setColor(Color.argb(alpha, 255, 255, 255));
+            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
             canvas.drawCircle(knobX, knobY, cStickRadius * 0.42f, knobPaint);
         }
 
