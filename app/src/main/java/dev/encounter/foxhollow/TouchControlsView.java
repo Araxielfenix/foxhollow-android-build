@@ -337,25 +337,7 @@ public class TouchControlsView extends View {
     }
 
     private Control hitTest(float x, float y) {
-        for (Control c : controls) {
-            float dx = x - c.cx;
-            float dy = y - c.cy;
-            // A slightly generous target: fingers are imprecise on a glass screen.
-            float hitRadius = c.radius * 1.35f;
-            if (dx * dx + dy * dy <= hitRadius * hitRadius) {
-                return c;
-            }
-        }
-
-        if (insideStickZone(x, y)) {
-            stickHomeX = x;
-            stickHomeY = y;
-            stickActive = true;
-            updateStick(x, y);
-            return stickControl;
-        }
-
-        // C-stick zone: right side, below the face button diamond
+        // C-stick zone FIRST (right side, above diamond) - prioritize over buttons
         if (insideCStickZone(x, y)) {
             cStickHomeX = x;
             cStickHomeY = y;
@@ -364,15 +346,34 @@ public class TouchControlsView extends View {
             return cStickControl;
         }
 
+        // Main stick zone
+        if (insideStickZone(x, y)) {
+            stickHomeX = x;
+            stickHomeY = y;
+            stickActive = true;
+            updateStick(x, y);
+            return stickControl;
+        }
+
+        // Buttons LAST
+        for (Control c : controls) {
+            float dx = x - c.cx;
+            float dy = y - c.cy;
+            float hitRadius = c.radius * 1.35f;
+            if (dx * dx + dy * dy <= hitRadius * hitRadius) {
+                return c;
+            }
+        }
+
         return null;
     }
 
     private boolean insideCStickZone(float x, float y) {
         // Use the actual visual position of the C-stick (cStickCenterX/Y)
-        // with a generous radius so the user can easily touch it
+        // with a VERY generous radius so the user can easily touch it
         float dx = x - cStickCenterX;
         float dy = y - cStickCenterY;
-        float zoneRadius = cStickRadius * 4f; // Generous touch zone around visual
+        float zoneRadius = cStickRadius * 8f; // Very generous touch zone (8x visual size)
         return (dx * dx + dy * dy) <= (zoneRadius * zoneRadius);
     }
 
