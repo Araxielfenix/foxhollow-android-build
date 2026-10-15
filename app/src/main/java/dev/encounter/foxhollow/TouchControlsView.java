@@ -544,38 +544,11 @@ public class TouchControlsView extends View {
         }
 
         int alpha = mini ? MINI_ALPHA : settings.alpha;
-        // Sticks use higher opacity for better visibility
-        int stickAlpha = Math.min(255, alpha + 60);
+        // Sticks use MAXIMUM opacity for best visibility
+        int stickAlpha = 255;
 
-        // Main stick: a faint ring at the origin plus the deflected knob.
-        if (stickActive && stickControl != null) {
-            if (settings.stickRing) {
-                ringPaint.setColor(Color.argb(Math.min(255, stickAlpha / 2), 255, 255, 255));
-                ringPaint.setStrokeWidth(mini ? 2f : 3f);
-                canvas.drawCircle(stickHomeX, stickHomeY, stickRadius, ringPaint);
-            }
-
-            float knobX = stickHomeX + stickX * stickRadius;
-            float knobY = stickHomeY + stickY * stickRadius;
-            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
-            canvas.drawCircle(knobX, knobY, stickRadius * 0.42f, knobPaint);
-        }
-
-        // C-stick: draw it above the face button diamond (floating like main stick)
-        if (cStickActive && cStickControl != null) {
-            if (settings.stickRing) {
-                ringPaint.setColor(Color.argb(Math.min(255, stickAlpha / 2), 255, 255, 255));
-                ringPaint.setStrokeWidth(mini ? 2f : 3f);
-                canvas.drawCircle(cStickHomeX, cStickHomeY, cStickRadius, ringPaint);
-            }
-
-            float knobX = cStickHomeX + cStickX * cStickRadius;
-            float knobY = cStickHomeY + cStickY * cStickRadius;
-            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
-            canvas.drawCircle(knobX, knobY, cStickRadius * 0.42f, knobPaint);
-        }
-
-for (Control c : controls) {
+        // Draw buttons FIRST (underneath)
+        for (Control c : controls) {
             boolean pressed = active.containsValue(c);
 
             int base = c.color;
@@ -593,6 +566,45 @@ for (Control c : controls) {
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float baseline = c.cy - (fm.ascent + fm.descent) / 2f;
             canvas.drawText(c.label, c.cx, baseline, textPaint);
+        }
+
+        // Main stick: ALWAYS draw guide ring (even when not active) so user knows where to touch
+        // When active, draw at finger position; when inactive, draw at default left zone center
+        float drawStickHomeX = stickActive ? stickHomeX : (getWidth() * 0.18f);
+        float drawStickHomeY = stickActive ? stickHomeY : (getHeight() * 0.65f);
+        
+        // Always draw guide ring for main stick
+        if (settings.stickRing) {
+            ringPaint.setColor(Color.argb(mini ? 100 : 160, 255, 255, 255));
+            ringPaint.setStrokeWidth(mini ? 3f : 4f);
+            canvas.drawCircle(drawStickHomeX, drawStickHomeY, stickRadius, ringPaint);
+        }
+        
+        // Draw knob only when active
+        if (stickActive && stickControl != null) {
+            float knobX = stickHomeX + stickX * stickRadius;
+            float knobY = stickHomeY + stickY * stickRadius;
+            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
+            canvas.drawCircle(knobX, knobY, stickRadius * 0.5f, knobPaint);
+        }
+
+        // C-stick: ALWAYS draw guide ring above face buttons
+        float drawCStickHomeX = cStickActive ? cStickHomeX : cStickCenterX;
+        float drawCStickHomeY = cStickActive ? cStickHomeY : cStickCenterY;
+        
+        // Always draw guide ring for C-stick
+        if (settings.stickRing) {
+            ringPaint.setColor(Color.argb(mini ? 100 : 160, 255, 255, 255));
+            ringPaint.setStrokeWidth(mini ? 3f : 4f);
+            canvas.drawCircle(drawCStickHomeX, drawCStickHomeY, cStickRadius, ringPaint);
+        }
+        
+        // Draw C-stick knob only when active
+        if (cStickActive && cStickControl != null) {
+            float knobX = cStickHomeX + cStickX * cStickRadius;
+            float knobY = cStickHomeY + cStickY * cStickRadius;
+            knobPaint.setColor(Color.argb(stickAlpha, 255, 255, 255));
+            canvas.drawCircle(knobX, knobY, cStickRadius * 0.5f, knobPaint);
         }
     }
 }
