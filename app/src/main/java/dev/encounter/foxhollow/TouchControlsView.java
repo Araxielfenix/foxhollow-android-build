@@ -36,6 +36,12 @@ public class TouchControlsView extends View {
     private static final int BTN_Y = 0x0800;
     private static final int BTN_START = 0x1000;
 
+    // C-stick (right analog stick) buttons - mapped to C-stick directions
+    private static final int BTN_C_UP = 0x2000;
+    private static final int BTN_C_DOWN = 0x4000;
+    private static final int BTN_C_LEFT = 0x8000;
+    private static final int BTN_C_RIGHT = 0x10000;
+
     /** Past this the matching d-pad bit is synthesised for code that only reads the d-pad. */
     private static final float DPAD_SYNTHESIS = 0.55f;
 
@@ -110,6 +116,17 @@ public class TouchControlsView extends View {
     private Control stickControl;
     /** The stick guide only makes sense while a finger owns the stick. */
     private boolean stickActive;
+
+    // C-stick (right analog stick)
+    private float cStickHomeX;
+    private float cStickHomeY;
+    private float cStickCenterX;
+    private float cStickCenterY;
+    private float cStickRadius;
+    private float cStickX;
+    private float cStickY;
+    private Control cStickControl;
+    private boolean cStickActive;
 
     public TouchControlsView(Context context, TouchControlSettings settings) {
         super(context);
@@ -212,13 +229,23 @@ public class TouchControlsView extends View {
             new Control("R", BTN_R, rX, shoulderRadius, shoulderRadius, COLOR_SHOULDER),
         };
 
-        // The stick floats: its origin is wherever the finger lands inside the left zone.
+        // The main stick floats: its origin is wherever the finger lands inside the left zone.
         stickControl = new Control("", 0, 0, 0, 0);
         stickRadius = unit * 0.125f * scale;
         stickHomeX = 0f;
         stickHomeY = 0f;
         stickX = 0f;
         stickY = 0f;
+
+        // C-stick (right analog stick): positioned below the face button diamond
+        cStickControl = new Control("", 0, 0, 0, 0);
+        cStickRadius = unit * 0.085f * scale; // Smaller than main stick
+        cStickCenterX = diamondX;
+        cStickCenterY = diamondY + gap * 1.8f; // Below the diamond
+        cStickHomeX = 0f;
+        cStickHomeY = 0f;
+        cStickX = 0f;
+        cStickY = 0f;
     }
 
     private boolean insideStickZone(float x, float y) {
@@ -261,6 +288,8 @@ public class TouchControlsView extends View {
                 int id = event.getPointerId(i);
                 if (active.get(id) == stickControl) {
                     updateStick(event.getX(i), event.getY(i));
+                } else if (active.get(id) == cStickControl) {
+                    updateCStick(event.getX(i), event.getY(i));
                 }
             }
 
@@ -284,6 +313,8 @@ public class TouchControlsView extends View {
             Control released = active.remove(event.getPointerId(index));
             if (released == stickControl) {
                 releaseStick();
+            } else if (released == cStickControl) {
+                releaseCStick();
             }
             gestureCandidate = false;
             break;
@@ -292,6 +323,7 @@ public class TouchControlsView extends View {
             active.clear();
             gestureCandidate = false;
             releaseStick();
+            releaseCStick();
             break;
         }
         default:
@@ -321,7 +353,23 @@ public class TouchControlsView extends View {
             return stickControl;
         }
 
+        // C-stick zone: right side, below the face button diamond
+        if (insideCStickZone(x, y)) {
+            cStickHomeX = x;
+            cStickHomeY = y;
+            cStickActive = true;
+            updateCStick(x, y);
+            return cStickControl;
+        }
+
         return null;
+    }
+
+    private boolean insideCStickZone(float x, float y) {
+        // Right side, below the face button diamond area
+        float w = getWidth();
+        float h = getHeight();
+        return x > w * 0.55f && y > h * 0.50f;
     }
 
     /**
@@ -364,6 +412,32 @@ public class TouchControlsView extends View {
         stickY = ny * scaled;
     }
 
+    private void updateCStick(float x, float y) {
+        float dx = x - cStickHomeX;
+        float dy = y - cStickHomeY;
+        float distance = (float) Math.hypot(dx, dy);
+
+        if (distance < 1e-3f) {
+            cStickX = 0f;
+            cStickY = 0f;
+            return;
+        }
+
+        float nx = dx / distance;
+        float ny = dy / distance;
+        float magnitude = Math.min(1f, distance / cStickRadius);
+        if (magnitude <= settings.deadzone) {
+            cStickX = 0f;
+            cStickY = 0f;
+            return;
+        }
+
+        // Rescale past the deadzone so the usable range still reaches full deflection.
+        float scaled = (magnitude - settings.deadzone) / (1f - settings.deadzone);
+        cStickX = nx * scaled;
+        cStickY = ny * scaled;
+    }
+
     private void releaseStick() {
         stickX = 0f;
         stickY = 0f;
@@ -371,10 +445,18 @@ public class TouchControlsView extends View {
         invalidate();
     }
 
+    private void releaseCStick() {
+        cStickX = 0f;
+        cStickY = 0f;
+        cStickActive = false;
+        invalidate();
+    }
+
     /** Releases everything, e.g. when the window loses focus. */
     public void releaseAll() {
         active.clear();
         releaseStick();
+        releaseCStick();
         publish();
     }
 
@@ -398,7 +480,7 @@ public class TouchControlsView extends View {
     private void publish() {
         int mask = 0;
         for (Control c : active.values()) {
-            if (c != stickControl) {
+            if (c != stickControl && c != cStickControl) {
                 mask |= c.button;
             }
         }
@@ -418,6 +500,25 @@ public class TouchControlsView extends View {
             }
             if (ny < -0.38f) {
                 mask |= BTN_UP;
+            }
+        }
+
+        // C-stick synthesis: map C-stick to C-buttons
+        float cMagnitude = (float) Math.hypot(cStickX, cStickY);
+        if (cMagnitude >= DPAD_SYNTHESIS) {
+            float nx = cStickX / cMagnitude;
+            float ny = cStickY / cMagnitude;
+            if (nx > 0.38f) {
+                mask |= BTN_C_RIGHT;
+            }
+            if (nx < -0.38f) {
+                mask |= BTN_C_LEFT;
+            }
+            if (ny > 0.38f) {
+                mask |= BTN_C_DOWN;
+            }
+            if (ny < -0.38f) {
+                mask |= BTN_C_UP;
             }
         }
 
@@ -458,6 +559,20 @@ public class TouchControlsView extends View {
             canvas.drawCircle(knobX, knobY, stickRadius * 0.42f, knobPaint);
         }
 
+        // C-stick: draw it below the face button diamond
+        if (cStickActive && cStickControl != null) {
+            if (settings.stickRing) {
+                ringPaint.setColor(Color.argb(mini ? 60 : 90, 255, 255, 255));
+                ringPaint.setStrokeWidth(mini ? 2f : 3f);
+                canvas.drawCircle(cStickCenterX, cStickCenterY, cStickRadius, ringPaint);
+            }
+
+            float knobX = cStickCenterX + cStickX * cStickRadius;
+            float knobY = cStickCenterY + cStickY * cStickRadius;
+            knobPaint.setColor(Color.argb(alpha, 255, 255, 255));
+            canvas.drawCircle(knobX, knobY, cStickRadius * 0.42f, knobPaint);
+        }
+
 for (Control c : controls) {
             boolean pressed = active.containsValue(c);
 
@@ -472,10 +587,11 @@ for (Control c : controls) {
             canvas.drawCircle(c.cx, c.cy, c.radius, ringPaint);
 
             textPaint.setColor(pressed ? Color.argb(255, 0, 0, 0) : Color.argb(alpha + 70, 255, 255, 255));
-            textPaint textSize(c.radius * (c.label.length() > 1 ? 0.42f : 0.8f));
+            textPaint.setTextSize(c.radius * (c.label.length() > 1 ? 0.42f : 0.8f));
             Paint.FontMetrics fm = textPaint.getFontMetrics();
             float baseline = c.cy - (fm.ascent + fm.descent) / 2f;
             canvas.drawText(c.label, c.cx, baseline, textPaint);
         }
     }
 }
+

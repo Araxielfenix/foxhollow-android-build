@@ -669,23 +669,26 @@ public class FoxhollowActivity extends SDLActivity {
             return;
         }
 
-        // The theme paints the status and navigation bars purple, which eats a strip of the
-        // picture on notched or tall screens. Make them transparent and let the game draw
-        // underneath, then hide them so they do not cover the controls either.
+        // Make status and navigation bars transparent so they don't show a colored stripe.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
         }
+
+        // Ensure the window content can draw behind the system bars (edge-to-edge).
+        window.getDecorView().setOnApplyWindowInsetsListener((v, insets) -> {
+            // Consume the insets so the layout can expand behind the bars.
+            return insets.consumeSystemWindowInsets();
+        });
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             View decorView = window.getDecorView();
             WindowInsetsController controller = decorView.getWindowInsetsController();
             if (controller != null) {
-                controller.setSystemBarsBehavior(
-                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                // Transient bars: they hide completely and only appear on swipe.
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
                 controller.hide(WindowInsets.Type.systemBars() | WindowInsets.Type.navigationBars());
             }
-            // Draw behind the bars so the game is not pushed down by them.
-            decorView.setOnApplyWindowInsetsListener((v, insets) -> insets);
         } else {
             // Legacy approach for older Android versions
             window.getDecorView().setSystemUiVisibility(

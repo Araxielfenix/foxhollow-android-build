@@ -23,5 +23,8 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:colorBackground">@color/black</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <!-- Edge-to-edge: allow content to draw behind system bars -->
+        <item name="android:windowTranslucentStatus">false</item>
+        <item name="android:windowTranslucentNavigation">false</item>
     </style>
 </resources>
