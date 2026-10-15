@@ -559,16 +559,16 @@ public class TouchControlsView extends View {
             canvas.drawCircle(knobX, knobY, stickRadius * 0.42f, knobPaint);
         }
 
-        // C-stick: draw it below the face button diamond
+        // C-stick: draw it below the face button diamond (floating like main stick)
         if (cStickActive && cStickControl != null) {
             if (settings.stickRing) {
                 ringPaint.setColor(Color.argb(mini ? 60 : 90, 255, 255, 255));
                 ringPaint.setStrokeWidth(mini ? 2f : 3f);
-                canvas.drawCircle(cStickCenterX, cStickCenterY, cStickRadius, ringPaint);
+                canvas.drawCircle(cStickHomeX, cStickHomeY, cStickRadius, ringPaint);
             }
 
-            float knobX = cStickCenterX + cStickX * cStickRadius;
-            float knobY = cStickCenterY + cStickY * cStickRadius;
+            float knobX = cStickHomeX + cStickX * cStickRadius;
+            float knobY = cStickHomeY + cStickY * cStickRadius;
             knobPaint.setColor(Color.argb(alpha, 255, 255, 255));
             canvas.drawCircle(knobX, knobY, cStickRadius * 0.42f, knobPaint);
         }

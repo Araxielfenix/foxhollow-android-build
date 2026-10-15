@@ -547,6 +547,9 @@ public class FoxhollowActivity extends SDLActivity {
         super.onWindowFocusChanged(hasFocus);
         if (!hasFocus) {
             releaseControls();
+        } else {
+            // Re-hide system bars when focus returns (e.g. after dialog, notification shade)
+            hideSystemBars();
         }
     }
 
@@ -681,8 +684,9 @@ public class FoxhollowActivity extends SDLActivity {
             return insets.consumeSystemWindowInsets();
         });
 
+        // Force immersive mode - hide bars completely
+        View decorView = window.getDecorView();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            View decorView = window.getDecorView();
             WindowInsetsController controller = decorView.getWindowInsetsController();
             if (controller != null) {
                 // Transient bars: they hide completely and only appear on swipe.
@@ -691,7 +695,7 @@ public class FoxhollowActivity extends SDLActivity {
             }
         } else {
             // Legacy approach for older Android versions
-            window.getDecorView().setSystemUiVisibility(
+            decorView.setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -700,6 +704,9 @@ public class FoxhollowActivity extends SDLActivity {
                 | View.SYSTEM_UI_FLAG_FULLSCREEN
             );
         }
+        
+        // Also request layout to ensure edge-to-edge
+        decorView.requestApplyInsets();
     }
 
     /**
