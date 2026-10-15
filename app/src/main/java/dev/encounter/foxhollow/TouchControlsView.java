@@ -368,13 +368,12 @@ public class TouchControlsView extends View {
     }
 
     private boolean insideCStickZone(float x, float y) {
-        // Right side, above the face button diamond area (where C-stick visually sits)
-        float w = getWidth();
-        float h = getHeight();
-        // C-stick is at cStickCenterX (diamondX) and cStickCenterY (diamondY - gap * 2.5f)
-        // diamondX is around w * 0.80, diamondY is around h * 0.62 (or anchored to edge)
-        // So C-stick is roughly at x ~ 0.80w, y ~ 0.35-0.45h
-        return x > w * 0.60f && y < h * 0.60f && y > h * 0.25f;
+        // Use the actual visual position of the C-stick (cStickCenterX/Y)
+        // with a generous radius so the user can easily touch it
+        float dx = x - cStickCenterX;
+        float dy = y - cStickCenterY;
+        float zoneRadius = cStickRadius * 4f; // Generous touch zone around visual
+        return (dx * dx + dy * dy) <= (zoneRadius * zoneRadius);
     }
 
     /**
